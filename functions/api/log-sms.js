@@ -1,6 +1,4 @@
 // Cloudflare Pages Function: /api/log-sms
-// Uses @supabase/supabase-js so the newer sb_secret_... key format works correctly
-
 import { createClient } from "@supabase/supabase-js";
 
 export async function onRequestPost(context) {
@@ -11,15 +9,19 @@ export async function onRequestPost(context) {
     "Access-Control-Allow-Origin": "*",
   };
 
-  // Bearer token auth
-  const auth = (request.headers.get("Authorization") || "").trim();
-  if (auth !== `Bearer ${env.LOG_SMS_SECRET}`) {
-    return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), { status: 401, headers: cors });
-  }
-
   let body;
   try { body = await request.json(); } catch {
     return new Response(JSON.stringify({ ok: false, error: "Invalid JSON" }), { status: 400, headers: cors });
+  }
+
+  // Accept secret key in JSON body (most reliable for iOS Shortcuts)
+  // Also accept Authorization header as fallback
+  const bodyKey  = (body.key || "").trim();
+  const authHdr  = (request.headers.get("Authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  const token    = bodyKey || authHdr;
+
+  if (token !== env.LOG_SMS_SECRET) {
+    return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), { status: 401, headers: cors });
   }
 
   const sms      = (body.sms      || "").trim();
@@ -30,18 +32,15 @@ export async function onRequestPost(context) {
     return new Response(JSON.stringify({ ok: false, error: "sms field required" }), { status: 400, headers: cors });
   }
 
-  // ── Parse SMS ─────────────────────────────────────────────────────────────
   const amount = parseSmsAmount(sms);
   if (!amount) {
     return new Response(JSON.stringify({ ok: false, error: "Could not parse amount", sms }), { status: 422, headers: cors });
   }
   const note = parseSmsNote(sms);
 
-  // ── Map category label → id ───────────────────────────────────────────────
   const catMap = { personal: "personal", work: "work", home: "home", savings: "investment", investment: "investment" };
-  const catId = catMap[category] || "personal";
+  const catId  = catMap[category] || "personal";
 
-  // ── Insert via Supabase JS client (handles new key format) ────────────────
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -51,8 +50,8 @@ export async function onRequestPost(context) {
   const { error } = await supabase.from("expenses").insert({
     id:       expId,
     user_id:  env.OWNER_USER_ID,
-    amount:   amount,
-    note:     note,
+    amount,
+    note,
     category: catId,
     pay_mode: payMode,
     date:     new Date().toISOString(),
@@ -75,8 +74,6 @@ export async function onRequestOptions() {
     },
   });
 }
-
-// ── SMS Parsing ──────────────────────────────────────────────────────────────
 
 function parseSmsAmount(sms) {
   const patterns = [
