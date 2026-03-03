@@ -79,32 +79,6 @@ export default function ExpenseTracker() {
   const mRef = useRef({}); // modal swipe-down tracking
   const lastTouchTime = useRef(0); // desktop click detection
 
-  // ── Load user's shortcut key ─────────────────────────────────────────────
-  useEffect(() => {
-    if (!userId) return;
-    supabase.from("user_keys").select("key_value").eq("user_id", userId).maybeSingle()
-      .then(({ data }) => setUserKey(data?.key_value || null));
-  }, [userId]);
-
-  const handleGenerateKey = useCallback(async () => {
-    setKeyLoading(true);
-    const chars = "abcdefghjkmnpqrstuvwxyz";
-    const digits = "0123456789";
-    let k = "";
-    for (let i = 0; i < 3; i++) k += chars[Math.floor(Math.random() * chars.length)];
-    for (let i = 0; i < 4; i++) k += digits[Math.floor(Math.random() * digits.length)];
-    await supabase.from("user_keys").delete().eq("user_id", userId);
-    const { error } = await supabase.from("user_keys").insert({ user_id: userId, key_value: k });
-    if (error) sToast("Error generating key", "err");
-    else { setUserKey(k); sToast("Key generated"); }
-    setKeyLoading(false);
-  }, [userId, sToast]);
-
-  const copyKey = useCallback(() => {
-    if (!userKey) return;
-    navigator.clipboard?.writeText(userKey).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
-  }, [userKey, sToast]);
-
   // ── Load data + realtime ──────────────────────────────────────────────────
   useEffect(() => {
     if (!userId) return;
@@ -181,6 +155,32 @@ export default function ExpenseTracker() {
   const sToast = useCallback((m, t = "ok") => { setToast({ m, t }); setTimeout(() => setToast(null), 1500); }, []);
 
   useEffect(() => { if (view === "add" && aRef.current) setTimeout(() => aRef.current?.focus(), 80); }, [view]);
+
+  // ── Shortcut key management ───────────────────────────────────────────────
+  useEffect(() => {
+    if (!userId) return;
+    supabase.from("user_keys").select("key_value").eq("user_id", userId).maybeSingle()
+      .then(({ data }) => setUserKey(data?.key_value || null));
+  }, [userId]);
+
+  const handleGenerateKey = useCallback(async () => {
+    setKeyLoading(true);
+    const chars = "abcdefghjkmnpqrstuvwxyz";
+    const digits = "0123456789";
+    let k = "";
+    for (let i = 0; i < 3; i++) k += chars[Math.floor(Math.random() * chars.length)];
+    for (let i = 0; i < 4; i++) k += digits[Math.floor(Math.random() * digits.length)];
+    await supabase.from("user_keys").delete().eq("user_id", userId);
+    const { error } = await supabase.from("user_keys").insert({ user_id: userId, key_value: k });
+    if (error) sToast("Error generating key", "err");
+    else { setUserKey(k); sToast("Key generated"); }
+    setKeyLoading(false);
+  }, [userId, sToast]);
+
+  const copyKey = useCallback(() => {
+    if (!userKey) return;
+    navigator.clipboard?.writeText(userKey).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
+  }, [userKey, sToast]);
 
   // ── CRUD — all optimistic ─────────────────────────────────────────────────
   const doSave = useCallback(async () => {
