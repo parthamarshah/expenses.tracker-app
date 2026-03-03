@@ -1,5 +1,7 @@
 // Cloudflare Pages Function: /api/log-sms
-// iPhone Shortcut posts bank SMS here → parsed → inserted into Supabase
+// Uses @supabase/supabase-js so the newer sb_secret_... key format works correctly
+
+import { createClient } from "@supabase/supabase-js";
 
 export async function onRequestPost(context) {
   const { env, request } = context;
@@ -21,57 +23,49 @@ export async function onRequestPost(context) {
   }
 
   const sms      = (body.sms      || "").trim();
-  const category = (body.category || "personal").trim();
+  const category = (body.category || "personal").trim().toLowerCase();
   const payMode  = (body.pay_mode || "bank").trim();
 
   if (!sms) {
     return new Response(JSON.stringify({ ok: false, error: "sms field required" }), { status: 400, headers: cors });
   }
 
-  // ── Parse amount ─────────────────────────────────────────────────────────
+  // ── Parse SMS ─────────────────────────────────────────────────────────────
   const amount = parseSmsAmount(sms);
   if (!amount) {
     return new Response(JSON.stringify({ ok: false, error: "Could not parse amount", sms }), { status: 422, headers: cors });
   }
-
   const note = parseSmsNote(sms);
 
-  // ── Insert into Supabase via REST API (bypasses RLS with service key) ────
-  const supabaseUrl  = env.SUPABASE_URL;
-  const serviceKey   = env.SUPABASE_SERVICE_KEY;
-  const ownerUserId  = env.OWNER_USER_ID;
+  // ── Map category label → id ───────────────────────────────────────────────
+  const catMap = { personal: "personal", work: "work", home: "home", savings: "investment", investment: "investment" };
+  const catId = catMap[category] || "personal";
+
+  // ── Insert via Supabase JS client (handles new key format) ────────────────
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 
   const expId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 
-  const res = await fetch(`${supabaseUrl}/rest/v1/expenses`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "apikey": serviceKey,
-      "Authorization": `Bearer ${serviceKey}`,
-      "Prefer": "return=minimal",
-    },
-    body: JSON.stringify({
-      id:        expId,
-      user_id:   ownerUserId,
-      amount:    amount,
-      note:      note,
-      category:  category,
-      pay_mode:  payMode,
-      date:      new Date().toISOString(),
-      trip_id:   null,
-    }),
+  const { error } = await supabase.from("expenses").insert({
+    id:       expId,
+    user_id:  env.OWNER_USER_ID,
+    amount:   amount,
+    note:     note,
+    category: catId,
+    pay_mode: payMode,
+    date:     new Date().toISOString(),
+    trip_id:  null,
   });
 
-  if (!res.ok) {
-    const err = await res.text();
-    return new Response(JSON.stringify({ ok: false, error: err }), { status: 500, headers: cors });
+  if (error) {
+    return new Response(JSON.stringify({ ok: false, error: error.message }), { status: 500, headers: cors });
   }
 
-  return new Response(JSON.stringify({ ok: true, amount, note, category }), { headers: cors });
+  return new Response(JSON.stringify({ ok: true, amount, note, category: catId }), { headers: cors });
 }
 
-// Handle CORS preflight
 export async function onRequestOptions() {
   return new Response(null, {
     headers: {
@@ -85,21 +79,14 @@ export async function onRequestOptions() {
 // ── SMS Parsing ──────────────────────────────────────────────────────────────
 
 function parseSmsAmount(sms) {
-  // Ordered by specificity — covers HDFC, ICICI, SBI, Axis, Kotak, Paytm, credit cards, UPI
   const patterns = [
-    // "Rs.1,234.56" or "Rs 1234" or "INR 1234.56"
     /(?:Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)/i,
-    // "debited for 1234" / "spent 1234"
     /(?:debited(?:\s+for)?|spent|paid(?:\s+via)?)\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
-    // "1234.56 debited" / "1234 has been debited"
     /([\d,]+(?:\.\d{1,2})?)\s*(?:INR\s*)?has\s+been\s+debited/i,
     /([\d,]+(?:\.\d{1,2})?)\s+(?:INR\s*)?debited/i,
-    // "transaction of 1234"
     /transaction\s+of\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
-    // "purchase of 1234"
     /purchase\s+of\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
   ];
-
   for (const pat of patterns) {
     const m = sms.match(pat);
     if (m) {
@@ -111,18 +98,11 @@ function parseSmsAmount(sms) {
 }
 
 function parseSmsNote(sms) {
-  // Try to extract merchant / payee / UPI handle
   const patterns = [
-    // "at MERCHANT NAME on" / "to MERCHANT on"
     /\b(?:at|to)\s+([A-Za-z0-9][A-Za-z0-9 &\-\.]{2,35}?)(?:\s+on\s|\s+via\s|\s+using\s|\s+ref|\s+\d|[.,]|$)/i,
-    // UPI VPA: someone@bank
     /(?:VPA|UPI[:\s]+)([A-Za-z0-9._-]+@[A-Za-z0-9]+)/i,
-    // "Info: MERCHANT" or "Remarks: MERCHANT"
     /(?:Info|Remarks|Narration|Description)[:\s]+([A-Za-z0-9][A-Za-z0-9 &\-\/\.]{2,35})/i,
-    // "credited by SENDER" (for reference)
-    /(?:credited\s+by)\s+([A-Za-z0-9][A-Za-z0-9 &\-\.]{2,30})/i,
   ];
-
   for (const pat of patterns) {
     const m = sms.match(pat);
     if (m) {
