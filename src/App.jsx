@@ -176,37 +176,80 @@ export default function ExpenseTracker() {
     return s.length >= 3 ? s : [100, 200, 500, 1000, 2000];
   }, [exps]);
 
+  // Smart context suggestions — shown when note is EMPTY and amount is filled.
+  // Scores each candidate note by multiple signals with recency decay; shows nothing
+  // rather than a low-confidence guess (quality gate on final score).
   const noteSuggestions = useMemo(() => {
     const amtNum = Number(amt);
-    if (!amtNum || amtNum <= 0) return []; // only show when amount is entered
-    const cutoff = Date.now() - 90 * 864e5;
+    if (!amtNum || amtNum <= 0) return [];
+    const now = Date.now();
+    const cutoff = now - 90 * 864e5;
     const recent = exps.filter(e => new Date(e.date).getTime() > cutoff && e.note && e.note.trim());
-    const matched = recent.filter(e => {
+    if (recent.length === 0) return [];
+    const nowDate = new Date();
+    const nowDow = nowDate.getDay();
+    // Time-of-day bucket: 0=morning(5-11), 1=afternoon(12-17), 2=evening(18+), 3=night(<5)
+    const todBucket = (h) => h >= 5 && h < 12 ? 0 : h >= 12 && h < 18 ? 1 : h >= 18 ? 2 : 3;
+    const nowTod = todBucket(nowDate.getHours());
+    const scores = {}, freqs = {};
+    recent.forEach(e => {
+      const n = e.note.trim();
+      const eDate = new Date(e.date);
       const sameCat = e.category === cat || (cat.startsWith("trip_") && e.tripId === cat.replace("trip_", ""));
-      const simAmt = e.amount > 0 && Math.abs(e.amount - amtNum) / Math.max(amtNum, 1) <= 0.15; // tight: ±15%
+      const amtRatio = e.amount > 0 ? Math.abs(e.amount - amtNum) / Math.max(amtNum, e.amount) : 1;
+      const simAmt = amtRatio <= 0.20;
+      const verySimAmt = amtRatio <= 0.05;
       const samePay = e.payMode === pay;
-      return (sameCat ? 1 : 0) + (simAmt ? 1 : 0) + (samePay ? 1 : 0) >= 2; // need ≥2 matching criteria
+      // Require at least 2 hard signals to suppress noise entirely
+      if ((sameCat ? 1 : 0) + (simAmt ? 1 : 0) + (samePay ? 1 : 0) < 2) return;
+      // Exponential recency decay: half-life ~21 days (recent entries count much more)
+      const recency = Math.exp(-(now - eDate.getTime()) / (21 * 864e5));
+      // Context score: category is the strongest signal, then amount precision, then mode
+      const ctx = (sameCat ? 4 : 0)
+        + (verySimAmt ? 3 : simAmt ? 1.5 : 0)
+        + (samePay ? 1.5 : 0)
+        + (eDate.getDay() === nowDow ? 0.7 : 0)          // weekly habit bonus
+        + (todBucket(eDate.getHours()) === nowTod ? 0.3 : 0); // time-of-day bonus
+      scores[n] = (scores[n] || 0) + ctx * recency;
+      freqs[n] = (freqs[n] || 0) + 1;
     });
-    const freq = {};
-    matched.forEach(e => { const n = e.note.trim(); freq[n] = (freq[n] || 0) + 1; });
-    return Object.entries(freq).filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n]) => n); // ≥2 occurrences
+    // Final score weights frequency logarithmically so a well-worn note beats a one-off.
+    // Quality gate (≥1.5) ensures we show nothing rather than a weak suggestion.
+    return Object.entries(scores)
+      .map(([n, sc]) => ({ n, score: sc * Math.log1p(freqs[n]) }))
+      .filter(({ score }) => score >= 1.5)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(({ n }) => n);
   }, [exps, amt, cat, pay]);
 
-  // Typing-based autocomplete: activates after 3 entries, matches note starts-with typed text
-  const NOTE_AUTOFILL_MIN = 3;
+  // Context-aware typing autocomplete — activates after 20 entries (enough history to be
+  // meaningful), scores prefix-matching completions by recency + context signals so the
+  // most relevant completion rises to the top. Trivial completions (<2 chars remaining)
+  // are suppressed. Max 3 items so it never crowds the screen.
+  const NOTE_AUTOFILL_MIN = 20;
   const noteAutocomplete = useMemo(() => {
     if (exps.length < NOTE_AUTOFILL_MIN) return [];
     if (!note || note.length < 2) return [];
     const q = note.toLowerCase();
-    const freq = {};
+    const amtNum = Number(amt);
+    const now = Date.now();
+    const scores = {};
     exps.forEach(e => {
       const n = (e.note || "").trim();
-      if (n && n.toLowerCase().startsWith(q) && n.toLowerCase() !== q) {
-        freq[n] = (freq[n] || 0) + 1;
-      }
+      if (!n || !n.toLowerCase().startsWith(q) || n.toLowerCase() === q) return;
+      if (n.slice(note.length).length < 2) return; // completion too trivial
+      const recency = Math.exp(-(now - new Date(e.date).getTime()) / (30 * 864e5));
+      const sameCat = e.category === cat || (cat.startsWith("trip_") && e.tripId === cat.replace("trip_", ""));
+      const amtRatio = amtNum > 0 && e.amount > 0 ? Math.abs(e.amount - amtNum) / Math.max(amtNum, e.amount) : 1;
+      const ctxBonus = (sameCat ? 2 : 0) + (amtRatio <= 0.25 ? 1 : 0) + (e.payMode === pay ? 0.5 : 0);
+      scores[n] = (scores[n] || 0) + (1 + ctxBonus) * recency;
     });
-    return Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n]) => n);
-  }, [exps, note]);
+    return Object.entries(scores)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([n]) => n);
+  }, [exps, note, amt, cat, pay]);
 
   const sToast = useCallback((m, t = "ok") => { setToast({ m, t }); setTimeout(() => setToast(null), 1500); }, []);
 
