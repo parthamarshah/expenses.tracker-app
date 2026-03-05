@@ -248,9 +248,8 @@ export default function ExpenseTracker() {
   // meaningful), scores prefix-matching completions by recency + context signals so the
   // most relevant completion rises to the top. Trivial completions (<2 chars remaining)
   // are suppressed. Max 3 items so it never crowds the screen.
-  const NOTE_AUTOFILL_MIN = 20;
   const noteAutocomplete = useMemo(() => {
-    if (exps.length < NOTE_AUTOFILL_MIN) return [];
+    if (exps.length < 20) return [];
     if (!note || note.length < 2) return [];
     const q = note.toLowerCase();
     const amtNum = Number(amt);
@@ -431,9 +430,10 @@ td.t2 { color: #666; white-space: nowrap; }
     });
     setCats(cleaned);
     setCatMod(false);
+    const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(cleaned) });
     setCatSaving(false);
-    await supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(cleaned) });
-  }, [editCats, userId]);
+    if (error) sToast("Sync error", "err");
+  }, [editCats, userId, sToast]);
 
   // ── CRUD — all optimistic ─────────────────────────────────────────────────
   const doSave = useCallback(async () => {
