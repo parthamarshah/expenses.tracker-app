@@ -2,16 +2,39 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" content="#000000" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Expenses" />
     <title>Expense Tracker</title>
+    <!-- App icon: ₹ in black rounded square -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23000'/%3E%3Ctext x='32' y='44' font-family='-apple-system,system-ui,sans-serif' font-size='34' font-weight='800' fill='%23fff' text-anchor='middle'%3E%E2%82%B9%3C/text%3E%3C/svg%3E" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.json" />
     <!-- Preconnect to Supabase to reduce auth + data fetch latency -->
     <link rel="preconnect" href="https://ecngekbnirgdynqdnxlx.supabase.co" />
     <link rel="dns-prefetch" href="https://ecngekbnirgdynqdnxlx.supabase.co" />
+    <!-- Inline critical CSS: shows branded loading screen instantly before JS loads -->
+    <style>
+      body { margin: 0; background: #fff; }
+      #root:empty {
+        display: flex; align-items: center; justify-content: center;
+        min-height: 100dvh; flex-direction: column; gap: 16px;
+      }
+      #root:empty::before {
+        content: "\20B9"; display: flex; align-items: center; justify-content: center;
+        width: 48px; height: 48px; border-radius: 12px; background: #000; color: #fff;
+        font: 800 24px/-apple-system, system-ui, sans-serif; font-size: 24px; font-weight: 800;
+      }
+      #root:empty::after {
+        content: ""; width: 28px; height: 28px;
+        border: 3px solid #E0E0E0; border-top-color: #000; border-radius: 50%;
+        animation: sp .6s linear infinite;
+      }
+      @keyframes sp { to { transform: rotate(360deg); } }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -126,7 +126,7 @@ export default function ExpenseTracker() {
           // merge: keep IDs + order from defaults, apply saved label/icon
           const merged = DEFAULT_CATEGORIES.map(def => {
             const s = saved.find(x => x.id === def.id);
-            return s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon } : def;
+            return s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def;
           });
           setCats(merged);
         } catch {}
@@ -174,7 +174,7 @@ export default function ExpenseTracker() {
   [trips, getTAct]);
 
   const addCats = useMemo(() => [
-    ...cats,
+    ...cats.filter(c => !c.hidden),
     ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips]);
 
@@ -276,7 +276,12 @@ export default function ExpenseTracker() {
       .map(([n]) => n);
   }, [exps, note, amt, cat, pay, noteFeedback]);
 
-  const sToast = useCallback((m, t = "ok") => { setToast({ m, t }); setTimeout(() => setToast(null), 1500); }, []);
+  const toastTimer = useRef(null);
+  const sToast = useCallback((m, t = "ok") => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ m, t });
+    toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, 1500);
+  }, []);
 
   useEffect(() => { if (view === "add" && aRef.current) setTimeout(() => aRef.current?.focus(), 80); }, [view]);
 
@@ -314,7 +319,8 @@ export default function ExpenseTracker() {
     const tid = cat.startsWith("trip_") ? cat.replace("trip_", "") : null;
     if (editId) {
       const orig = exps.find(e => e.id === editId);
-      const updated = { ...orig, amount: v, note: note.trim(), category: tid ? "trip" : cat, payMode: pay, tripId: tid, date: editDate ? new Date(editDate + "T12:00:00").toISOString() : orig?.date };
+      const origTime = orig?.date ? new Date(orig.date).toISOString().slice(11) : "12:00:00.000Z";
+      const updated = { ...orig, amount: v, note: note.trim(), category: tid ? "trip" : cat, payMode: pay, tripId: tid, date: editDate ? new Date(editDate + "T" + origTime).toISOString() : orig?.date };
       setExps(p => p.map(e => e.id === editId ? updated : e).sort((a, b) => new Date(b.date) - new Date(a.date)));
       setEditId(null); setEditDate(""); sToast("Updated");
       supabase.from("expenses").update(expToDb(updated, userId)).eq("id", editId)
@@ -416,12 +422,14 @@ export default function ExpenseTracker() {
   }, [exps, fCat, fPay, sq, selTrip, allCats]);
 
   // ── Export ────────────────────────────────────────────────────────────────
+  const esc = useCallback((v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"), []);
   const doExportPDF = useCallback(() => {
     if (filtered.length === 0) return;
     const getCatLabel = (e) => {
       if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
       return cats.find(c => c.id === e.category)?.label || e.category;
     };
+    const userName = session?.user?.user_metadata?.full_name || session?.user?.email?.split("@")[0] || "Expense Report";
     const periodLabel = selTrip
       ? `Trip: ${trips.find(t => t.id === selTrip)?.name || ""}`
       : fCat !== "all" ? (allCats.find(c => c.id === fCat)?.label || "Category") : "All Categories";
@@ -431,13 +439,13 @@ export default function ExpenseTracker() {
       : `${tds(Math.min(...dates))} \u2013 ${tds(Math.max(...dates))}`;
     const total = filtered.reduce((s, e) => s + e.amount, 0);
     const generated = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
-    const fileName = `Gurjar-Books-${periodLabel.replace(/[^\w]/g, "-")}-${new Date().toISOString().slice(0, 10)}`;
+    const fileName = `Expenses-${esc(periodLabel).replace(/[^\w]/g, "-")}-${new Date().toISOString().slice(0, 10)}`;
     const rows = [...filtered].reverse().map(e => `
       <tr>
         <td>${tds(e.date)}</td>
         <td class="t2">${tts(e.date)}</td>
-        <td>${getCatLabel(e)}</td>
-        <td>${e.note ? e.note.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "<span class='em'>\u2014</span>"}</td>
+        <td>${esc(getCatLabel(e))}</td>
+        <td>${e.note ? esc(e.note) : "<span class='em'>\u2014</span>"}</td>
         <td class="t2">${e.payMode === "cash" ? "Cash" : "Bank"}</td>
         <td class="amt">\u20B9${e.amount.toLocaleString("en-IN")}</td>
       </tr>`).join("");
@@ -445,7 +453,7 @@ export default function ExpenseTracker() {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>${fileName}</title>
+<title>${esc(fileName)}</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; color: #111; padding: 28px 32px; font-size: 13px; line-height: 1.5; }
@@ -471,8 +479,8 @@ td.t2 { color: #666; white-space: nowrap; }
 </head>
 <body>
 <div class="header">
-  <div class="brand">\u20B9 Gurjar Books</div>
-  <div class="subtitle">Expense Report &middot; ${periodLabel}</div>
+  <div class="brand">${esc(userName)}</div>
+  <div class="subtitle">Expense Report &middot; ${esc(periodLabel)}</div>
   <div class="meta">Period: <b>${dateRange}</b> &nbsp;&middot;&nbsp; Generated: ${generated}${fPay !== "all" ? ` &nbsp;&middot;&nbsp; ${fPay === "cash" ? "Cash" : "Bank"} only` : ""}</div>
 </div>
 <table>
@@ -495,14 +503,14 @@ td.t2 { color: #666; white-space: nowrap; }
     <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
   </div>
 </div>
-<div class="footer">Gurjar Books Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
-<script>document.title = "${fileName}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
+<div class="footer">Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
+<script>document.title = "${esc(fileName)}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
 </body>
 </html>`;
     const win = window.open("", "_blank");
     if (win) { win.document.write(html); win.document.close(); }
     else sToast("Allow pop-ups to export PDF", "err");
-  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast]);
+  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast, session, esc]);
 
   const doExportCSV = useCallback(() => {
     if (filtered.length === 0) return;
@@ -510,10 +518,10 @@ td.t2 { color: #666; white-space: nowrap; }
       if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
       return cats.find(c => c.id === e.category)?.label || e.category;
     };
-    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const csvEsc = (v) => `"${String(v).replace(/"/g, '""')}"`;
     const header = ["Date", "Time", "Category", "Note", "Payment Mode", "Amount (INR)"].join(",");
     const csvRows = [...filtered].reverse().map(e =>
-      [tds(e.date), tts(e.date), esc(getCatLabel(e)), esc(e.note || ""), e.payMode === "cash" ? "Cash" : "Bank", e.amount].join(",")
+      [tds(e.date), tts(e.date), csvEsc(getCatLabel(e)), csvEsc(e.note || ""), e.payMode === "cash" ? "Cash" : "Bank", e.amount].join(",")
     );
     const csv = [header, ...csvRows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -534,8 +542,7 @@ td.t2 { color: #666; white-space: nowrap; }
     setCatSaving(true);
     const cleaned = editCats.map(c => {
       const def = DEFAULT_CATEGORIES.find(d => d.id === c.id);
-      if (c.id === "investment") return { ...def }; // always keep default for investment
-      return { id: c.id, label: c.label.trim() || def.label, icon: c.icon.trim() || def.icon };
+      return { id: c.id, label: c.label.trim() || def.label, icon: c.icon.trim() || def.icon, hidden: !!c.hidden };
     });
     setCats(cleaned);
     setCatMod(false);
@@ -1157,27 +1164,14 @@ td.t2 { color: #666; white-space: nowrap; }
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Customise Categories</div>
-            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels and icons. Your existing entries are unaffected.</div>
-            {editCats.map((c, i) => {
-              const locked = c.id === "investment";
-              return (
-                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                  {locked ? (
-                    <div style={{ width: 46, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.lt}`, fontSize: 22, textAlign: "center", background: G.bg3, color: G.t3, boxSizing: "border-box", flexShrink: 0 }}>{c.icon}</div>
-                  ) : (
-                    <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 46, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
-                  )}
-                  {locked ? (
-                    <div style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.lt}`, fontSize: 16, background: G.bg3, color: G.t3, boxSizing: "border-box", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span>{c.label}</span>
-                      <span style={{ fontSize: 11, color: G.tm, fontWeight: 600, letterSpacing: 0.3 }}>default · locked</span>
-                    </div>
-                  ) : (
-                    <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={DEFAULT_CATEGORIES[i].label} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
-                  )}
-                </div>
-              );
-            })}
+            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels, icons, or hide categories you don't use.</div>
+            {editCats.map((c, i) => (
+              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, opacity: c.hidden ? 0.45 : 1 }}>
+                <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 44, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
+                <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={DEFAULT_CATEGORIES[i].label} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
+                <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 38, height: 38, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "○" : "●"}</button>
+              </div>
+            ))}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={() => setEditCats(DEFAULT_CATEGORIES.map(c => ({ ...c })))} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Reset</button>
               <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
