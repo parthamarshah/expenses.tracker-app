@@ -189,11 +189,11 @@ export default function ExpenseTracker() {
     });
     const freq = {};
     matched.forEach(e => { const n = e.note.trim(); freq[n] = (freq[n] || 0) + 1; });
-    return Object.entries(freq).filter(([, c]) => c >= 3).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n]) => n); // ≥3 occurrences
+    return Object.entries(freq).filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([n]) => n); // ≥2 occurrences
   }, [exps, amt, cat, pay]);
 
-  // Typing-based autocomplete: activates after 20 entries, matches note starts-with typed text
-  const NOTE_AUTOFILL_MIN = 20;
+  // Typing-based autocomplete: activates after 3 entries, matches note starts-with typed text
+  const NOTE_AUTOFILL_MIN = 3;
   const noteAutocomplete = useMemo(() => {
     if (exps.length < NOTE_AUTOFILL_MIN) return [];
     if (!note || note.length < 2) return [];
@@ -238,6 +238,115 @@ export default function ExpenseTracker() {
     navigator.clipboard?.writeText(userKey).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
   }, [userKey, sToast]);
 
+  // ── Export ────────────────────────────────────────────────────────────────
+  const doExportPDF = useCallback(() => {
+    if (filtered.length === 0) return;
+    const getCatLabel = (e) => {
+      if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
+      return cats.find(c => c.id === e.category)?.label || e.category;
+    };
+    const periodLabel = selTrip
+      ? `Trip: ${trips.find(t => t.id === selTrip)?.name || ""}`
+      : fCat !== "all" ? (allCats.find(c => c.id === fCat)?.label || "Category") : "All Categories";
+    const dates = filtered.map(e => new Date(e.date).getTime());
+    const dateRange = sameDay(Math.min(...dates), Math.max(...dates))
+      ? tds(Math.min(...dates))
+      : `${tds(Math.min(...dates))} \u2013 ${tds(Math.max(...dates))}`;
+    const total = filtered.reduce((s, e) => s + e.amount, 0);
+    const generated = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+    const fileName = `Gurjar-Books-${periodLabel.replace(/[^\w]/g, "-")}-${new Date().toISOString().slice(0, 10)}`;
+    const rows = [...filtered].reverse().map(e => `
+      <tr>
+        <td>${tds(e.date)}</td>
+        <td class="t2">${tts(e.date)}</td>
+        <td>${getCatLabel(e)}</td>
+        <td>${e.note ? e.note.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "<span class='em'>\u2014</span>"}</td>
+        <td class="t2">${e.payMode === "cash" ? "Cash" : "Bank"}</td>
+        <td class="amt">\u20B9${e.amount.toLocaleString("en-IN")}</td>
+      </tr>`).join("");
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>${fileName}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; color: #111; padding: 28px 32px; font-size: 13px; line-height: 1.5; }
+.header { padding-bottom: 14px; margin-bottom: 20px; border-bottom: 2.5px solid #111; }
+.brand { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+.subtitle { font-size: 15px; font-weight: 700; color: #333; margin-top: 6px; }
+.meta { font-size: 11.5px; color: #666; margin-top: 4px; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12.5px; }
+thead th { background: #111; color: #fff; padding: 8px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; text-align: left; }
+thead th.r { text-align: right; }
+td { padding: 7px 10px; border-bottom: 1px solid #EBEBEB; vertical-align: top; }
+tr:nth-child(even) td { background: #F8F8F8; }
+td.amt { text-align: right; font-weight: 700; white-space: nowrap; }
+td.t2 { color: #666; white-space: nowrap; }
+.em { color: #AAA; }
+.summary { display: flex; justify-content: space-between; align-items: flex-end; padding-top: 14px; border-top: 2px solid #111; }
+.sum-label { font-size: 11px; font-weight: 700; color: #666; letter-spacing: 0.8px; text-transform: uppercase; }
+.sum-total { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-top: 3px; }
+.sum-meta { font-size: 12px; color: #888; }
+.footer { margin-top: 24px; font-size: 10px; color: #BBB; text-align: center; }
+@media print { body { padding: 0; } @page { margin: 1.5cm; size: A4 portrait; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="brand">\u20B9 Gurjar Books</div>
+  <div class="subtitle">Expense Report &middot; ${periodLabel}</div>
+  <div class="meta">Period: <b>${dateRange}</b> &nbsp;&middot;&nbsp; Generated: ${generated}${fPay !== "all" ? ` &nbsp;&middot;&nbsp; ${fPay === "cash" ? "Cash" : "Bank"} only` : ""}</div>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Time</th>
+      <th>Category</th>
+      <th>Note</th>
+      <th>Mode</th>
+      <th class="r">Amount</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="summary">
+  <div class="sum-meta">${filtered.length} entr${filtered.length === 1 ? "y" : "ies"}</div>
+  <div style="text-align:right">
+    <div class="sum-label">Total</div>
+    <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
+  </div>
+</div>
+<div class="footer">Gurjar Books Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
+<script>document.title = "${fileName}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
+</body>
+</html>`;
+    const win = window.open("", "_blank");
+    if (win) { win.document.write(html); win.document.close(); }
+    else sToast("Allow pop-ups to export PDF", "err");
+  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast]);
+
+  const doExportCSV = useCallback(() => {
+    if (filtered.length === 0) return;
+    const getCatLabel = (e) => {
+      if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
+      return cats.find(c => c.id === e.category)?.label || e.category;
+    };
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const header = ["Date", "Time", "Category", "Note", "Payment Mode", "Amount (INR)"].join(",");
+    const csvRows = [...filtered].reverse().map(e =>
+      [tds(e.date), tts(e.date), esc(getCatLabel(e)), esc(e.note || ""), e.payMode === "cash" ? "Cash" : "Bank", e.amount].join(",")
+    );
+    const csv = [header, ...csvRows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `Gurjar-Books-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    URL.revokeObjectURL(url);
+    sToast("CSV downloaded");
+  }, [filtered, cats, trips, sToast]);
+
   // ── Custom categories ─────────────────────────────────────────────────────
   const openCatMod = useCallback(() => {
     setEditCats(cats.map(c => ({ ...c })));
@@ -246,11 +355,11 @@ export default function ExpenseTracker() {
 
   const saveCustomCats = useCallback(async () => {
     setCatSaving(true);
-    const cleaned = editCats.map(c => ({
-      id: c.id,
-      label: c.label.trim() || DEFAULT_CATEGORIES.find(d => d.id === c.id).label,
-      icon:  c.icon.trim()  || DEFAULT_CATEGORIES.find(d => d.id === c.id).icon,
-    }));
+    const cleaned = editCats.map(c => {
+      const def = DEFAULT_CATEGORIES.find(d => d.id === c.id);
+      if (c.id === "investment") return { ...def }; // always keep default for investment
+      return { id: c.id, label: c.label.trim() || def.label, icon: c.icon.trim() || def.icon };
+    });
     setCats(cleaned);
     setCatMod(false);
     setCatSaving(false);
@@ -536,12 +645,15 @@ export default function ExpenseTracker() {
             </div>
 
             <div style={{ position: "relative" }}>
-              <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); if (e.key === "Tab" && noteAutocomplete.length > 0) { e.preventDefault(); hap(); setNote(noteAutocomplete[0]); } }} style={{ width: "100%", padding: "12px 14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
-              {/* Autocomplete dropdown: shows while typing (after 20 entries) */}
+              <div style={{ position: "relative" }}>
+                <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); if (e.key === "Tab" && noteAutocomplete.length > 0) { e.preventDefault(); hap(); setNote(noteAutocomplete[0]); } }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
+                {note && <button onClick={() => { hap(); setNote(""); }} tabIndex={-1} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, color: G.tm, padding: "0 2px", lineHeight: 1, zIndex: 1 }}>{"\u2715"}</button>}
+              </div>
+              {/* Autocomplete dropdown: shows while typing (after 3 entries) */}
               {noteAutocomplete.length > 0 && (
                 <div style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 3, background: G.bg, border: `1.5px solid ${G.bdr}`, borderRadius: 12, zIndex: 50, overflow: "hidden", boxShadow: "0 4px 16px rgba(0,0,0,.10)" }}>
                   {noteAutocomplete.map((s, i) => (
-                    <button key={s} onMouseDown={e => { e.preventDefault(); hap(); setNote(s); }} style={{ display: "block", width: "100%", padding: "11px 14px", border: "none", borderTop: i > 0 ? `1px solid ${G.lt}` : "none", background: "transparent", textAlign: "left", fontSize: 15, color: G.t1, cursor: "pointer", fontWeight: i === 0 ? 600 : 400 }}>
+                    <button key={s} onPointerDown={e => { e.preventDefault(); hap(); setNote(s); }} style={{ display: "block", width: "100%", padding: "11px 14px", border: "none", borderTop: i > 0 ? `1px solid ${G.lt}` : "none", background: "transparent", textAlign: "left", fontSize: 15, color: G.t1, cursor: "pointer", fontWeight: i === 0 ? 600 : 400 }}>
                       <span style={{ color: G.t3 }}>{note}</span>{s.slice(note.length)}
                     </button>
                   ))}
@@ -619,7 +731,13 @@ export default function ExpenseTracker() {
                 if (sameDay(oldest, newest)) return ` · ${dayLbl(oldest)}`;
                 return ` · ${oldest.toLocaleDateString("en-IN", { day: "numeric", month: "short" })} – ${newest.toLocaleDateString("en-IN", { day: "numeric", month: "short" })}`;
               })()}</span>
-              <span style={{ fontWeight: 800, fontSize: 16, color: G.t1 }}>{formatINR(filtered.reduce((s, e) => s + e.amount, 0))}</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {filtered.length > 0 && (<>
+                  <button onClick={doExportCSV} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t3, cursor: "pointer", letterSpacing: 0.3 }}>CSV</button>
+                  <button onClick={doExportPDF} style={{ background: G.bg2, border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t2, cursor: "pointer", letterSpacing: 0.3 }}>PDF</button>
+                </>)}
+                <span style={{ fontWeight: 800, fontSize: 16, color: G.t1 }}>{formatINR(filtered.reduce((s, e) => s + e.amount, 0))}</span>
+              </div>
             </div>
 
             {filtered.length === 0 ? (
@@ -967,29 +1085,30 @@ export default function ExpenseTracker() {
       {/* ══════ CATEGORY EDIT MODAL ══════ */}
       {catMod && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setCatMod(false)}>
-          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px" }} onClick={e => e.stopPropagation()}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Customise Categories</div>
             <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels and icons. Your existing entries are unaffected.</div>
-            {editCats.map((c, i) => (
-              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                <input
-                  type="text"
-                  value={c.icon}
-                  onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))}
-                  maxLength={2}
-                  style={{ width: 46, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box" }}
-                />
-                <input
-                  type="text"
-                  value={c.label}
-                  onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))}
-                  maxLength={14}
-                  placeholder={DEFAULT_CATEGORIES[i].label}
-                  style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }}
-                />
-              </div>
-            ))}
+            {editCats.map((c, i) => {
+              const locked = c.id === "investment";
+              return (
+                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                  {locked ? (
+                    <div style={{ width: 46, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.lt}`, fontSize: 22, textAlign: "center", background: G.bg3, color: G.t3, boxSizing: "border-box", flexShrink: 0 }}>{c.icon}</div>
+                  ) : (
+                    <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 46, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
+                  )}
+                  {locked ? (
+                    <div style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.lt}`, fontSize: 16, background: G.bg3, color: G.t3, boxSizing: "border-box", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span>{c.label}</span>
+                      <span style={{ fontSize: 11, color: G.tm, fontWeight: 600, letterSpacing: 0.3 }}>default · locked</span>
+                    </div>
+                  ) : (
+                    <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={DEFAULT_CATEGORIES[i].label} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
+                  )}
+                </div>
+              );
+            })}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={() => setEditCats(DEFAULT_CATEGORIES.map(c => ({ ...c })))} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Reset</button>
               <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
