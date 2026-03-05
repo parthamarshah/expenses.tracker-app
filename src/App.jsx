@@ -86,6 +86,22 @@ export default function ExpenseTracker() {
   const [catMod,     setCatMod]     = useState(false);
   const [editCats,   setEditCats]   = useState(DEFAULT_CATEGORIES);
   const [catSaving,  setCatSaving]  = useState(false);
+  // Persisted feedback: counts how many times the user has chosen each note from a suggestion/autocomplete.
+  // Stored in localStorage so it accumulates across sessions without needing a DB migration.
+  const [noteFeedback, setNoteFeedback] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("note_feedback") || "{}"); }
+    catch { return {}; }
+  });
+  // Call whenever the user explicitly picks a note from either suggestion chip or autocomplete list.
+  const trackNoteChosen = useCallback((n) => {
+    if (!n) return;
+    setNoteFeedback(prev => {
+      const updated = { ...prev, [n]: { count: (prev[n]?.count || 0) + 1, lastUsed: Date.now() } };
+      try { localStorage.setItem("note_feedback", JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+  }, []);
+
   const aRef = useRef(null);
   const tRef = useRef({});
   const mRef = useRef({}); // modal swipe-down tracking
@@ -213,15 +229,20 @@ export default function ExpenseTracker() {
       scores[n] = (scores[n] || 0) + ctx * recency;
       freqs[n] = (freqs[n] || 0) + 1;
     });
-    // Final score weights frequency logarithmically so a well-worn note beats a one-off.
+    // Final score: context × log(frequency) × user-choice feedback boost.
     // Quality gate (≥1.5) ensures we show nothing rather than a weak suggestion.
     return Object.entries(scores)
-      .map(([n, sc]) => ({ n, score: sc * Math.log1p(freqs[n]) }))
+      .map(([n, sc]) => {
+        const fb = noteFeedback[n];
+        // Each past user choice adds a logarithmic boost (max ~+60% at 10 picks)
+        const fbBoost = fb ? 1 + 0.4 * Math.log1p(fb.count) : 1;
+        return { n, score: sc * Math.log1p(freqs[n]) * fbBoost };
+      })
       .filter(({ score }) => score >= 1.5)
       .sort((a, b) => b.score - a.score)
       .slice(0, 3)
       .map(({ n }) => n);
-  }, [exps, amt, cat, pay]);
+  }, [exps, amt, cat, pay, noteFeedback]);
 
   // Context-aware typing autocomplete — activates after 20 entries (enough history to be
   // meaningful), scores prefix-matching completions by recency + context signals so the
@@ -246,10 +267,15 @@ export default function ExpenseTracker() {
       scores[n] = (scores[n] || 0) + (1 + ctxBonus) * recency;
     });
     return Object.entries(scores)
+      .map(([n, sc]) => {
+        const fb = noteFeedback[n];
+        const fbBoost = fb ? 1 + 0.4 * Math.log1p(fb.count) : 1;
+        return [n, sc * fbBoost];
+      })
       .sort((a, b) => b[1] - a[1])
       .slice(0, 3)
       .map(([n]) => n);
-  }, [exps, note, amt, cat, pay]);
+  }, [exps, note, amt, cat, pay, noteFeedback]);
 
   const sToast = useCallback((m, t = "ok") => { setToast({ m, t }); setTimeout(() => setToast(null), 1500); }, []);
 
@@ -689,14 +715,14 @@ td.t2 { color: #666; white-space: nowrap; }
 
             <div style={{ position: "relative" }}>
               <div style={{ position: "relative" }}>
-                <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); if (e.key === "Tab" && noteAutocomplete.length > 0) { e.preventDefault(); hap(); setNote(noteAutocomplete[0]); } }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
+                <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); if (e.key === "Tab" && noteAutocomplete.length > 0) { e.preventDefault(); hap(); trackNoteChosen(noteAutocomplete[0]); setNote(noteAutocomplete[0]); } }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
                 {note && <button onClick={() => { hap(); setNote(""); }} tabIndex={-1} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, color: G.tm, padding: "0 2px", lineHeight: 1, zIndex: 1 }}>{"\u2715"}</button>}
               </div>
               {/* Autocomplete dropdown: shows while typing (after 3 entries) */}
               {noteAutocomplete.length > 0 && (
                 <div style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 3, background: G.bg, border: `1.5px solid ${G.bdr}`, borderRadius: 12, zIndex: 50, overflow: "hidden", boxShadow: "0 4px 16px rgba(0,0,0,.10)" }}>
                   {noteAutocomplete.map((s, i) => (
-                    <button key={s} onPointerDown={e => { e.preventDefault(); hap(); setNote(s); }} style={{ display: "block", width: "100%", padding: "11px 14px", border: "none", borderTop: i > 0 ? `1px solid ${G.lt}` : "none", background: "transparent", textAlign: "left", fontSize: 15, color: G.t1, cursor: "pointer", fontWeight: i === 0 ? 600 : 400 }}>
+                    <button key={s} onPointerDown={e => { e.preventDefault(); hap(); trackNoteChosen(s); setNote(s); }} style={{ display: "block", width: "100%", padding: "11px 14px", border: "none", borderTop: i > 0 ? `1px solid ${G.lt}` : "none", background: "transparent", textAlign: "left", fontSize: 15, color: G.t1, cursor: "pointer", fontWeight: i === 0 ? 600 : 400 }}>
                       <span style={{ color: G.t3 }}>{note}</span>{s.slice(note.length)}
                     </button>
                   ))}
@@ -706,7 +732,7 @@ td.t2 { color: #666; white-space: nowrap; }
               {noteSuggestions.length > 0 && !note && (
                 <div style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 6, paddingBottom: 2, WebkitOverflowScrolling: "touch" }}>
                   {noteSuggestions.map(s => (
-                    <button key={s} onClick={() => { hap(); setNote(s); }} style={{ padding: "5px 12px", borderRadius: 16, border: `1.5px solid ${G.bdr}`, background: G.bg2, color: G.t2, fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", cursor: "pointer", flexShrink: 0 }}>{s}</button>
+                    <button key={s} onClick={() => { hap(); trackNoteChosen(s); setNote(s); }} style={{ padding: "5px 12px", borderRadius: 16, border: `1.5px solid ${G.bdr}`, background: G.bg2, color: G.t2, fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", cursor: "pointer", flexShrink: 0 }}>{s}</button>
                   ))}
                 </div>
               )}
