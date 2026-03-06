@@ -20,7 +20,6 @@ export async function onRequestGet(context) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Look up user from key
   const { data: keyRow } = await supabase
     .from("user_keys")
     .select("user_id")
@@ -33,15 +32,51 @@ export async function onRequestGet(context) {
 
   const userId = keyRow.user_id;
 
-  // Fixed categories
-  const fixed = [
-    { id: "personal", label: "Personal" },
-    { id: "work", label: "Work" },
-    { id: "home", label: "Home" },
-    { id: "savings", label: "Savings" },
+  // Fixed base categories with emoji icons
+  const baseFixed = [
+    { id: "personal", label: "👤 Personal" },
+    { id: "work",     label: "💼 Work"     },
+    { id: "home",     label: "🏠 Home"     },
+    { id: "savings",  label: "₹ Savings"  },
   ];
 
-  // Fetch active trips (not archived) for this user
+  // User category overrides (custom labels/icons + custom categories)
+  const { data: userCatRows } = await supabase
+    .from("user_categories")
+    .select("id, label, icon, hidden, is_savings")
+    .eq("user_id", userId)
+    .eq("hidden", false);
+
+  const userCats = userCatRows || [];
+  const sysIds = new Set(["personal", "work", "home", "investment"]);
+
+  // Build override map for system categories
+  const overrideMap = {};
+  const customCats = [];
+  userCats.forEach(c => {
+    if (sysIds.has(c.id)) overrideMap[c.id] = c;
+    else customCats.push(c);
+  });
+
+  // Build fixed categories with user overrides
+  // Note: "savings" in API maps to "investment" internally
+  const fixed = baseFixed
+    .filter(c => {
+      // If user hid the "investment" system category
+      const sysId = c.id === "savings" ? "investment" : c.id;
+      return !overrideMap[sysId]?.hidden;
+    })
+    .map(c => {
+      const sysId = c.id === "savings" ? "investment" : c.id;
+      const ov = overrideMap[sysId];
+      if (ov) return { id: c.id, label: `${ov.icon} ${ov.label}` };
+      return c;
+    });
+
+  // Add custom categories
+  const custom = customCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
+
+  // Fetch active trips
   const { data: tripRows } = await supabase
     .from("trips")
     .select("id, name, pinned")
@@ -49,7 +84,6 @@ export async function onRequestGet(context) {
     .eq("archived", false)
     .order("created_at", { ascending: false });
 
-  // Determine which trips are "active" — had an expense in last 7 days, or pinned
   const trips = tripRows || [];
   let activeTrips = trips;
 
@@ -66,18 +100,22 @@ export async function onRequestGet(context) {
     activeTrips = trips.filter(t => t.pinned || recentTripIds.has(t.id));
   }
 
-  const categories = [
-    ...fixed,
-    ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈ ${t.name}` })),
-  ];
+  const tripCats = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
 
-  return new Response(JSON.stringify({ ok: true, categories }), { headers: cors });
+  const categories = [...fixed, ...custom, ...tripCats];
+
+  // Also return a flat labels array for iOS Shortcuts "Choose from List"
+  // — use this array directly; the shortcut will send back the full label string
+  // and log-sms.js will map it to the correct internal id.
+  const labels = categories.map(c => c.label);
+
+  return new Response(JSON.stringify({ ok: true, categories, labels }), { headers: cors });
 }
 
 export async function onRequestOptions() {
   return new Response(null, {
     headers: {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     },

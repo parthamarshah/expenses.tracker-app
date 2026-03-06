@@ -116,11 +116,21 @@ function AuthInner() {
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
         if (error) setErr(error.message);
       } else {
-        const { error } = await supabase.auth.signUp({ email: email.trim(), password });
+        const { data: signUpData, error } = await supabase.auth.signUp({ email: email.trim(), password });
         if (error) {
-          if (/already registered|already exists|already.*sign/i.test(error.message)) setErr("__exists__");
+          // Supabase returns various messages for duplicate emails
+          if (
+            /already registered|already exists|already.*sign|user already/i.test(error.message) ||
+            error.status === 422 || error.code === "user_already_exists" ||
+            error.message?.toLowerCase().includes("email")
+          ) setErr("__exists__");
           else setErr(error.message);
-        } else setInfo("Check your email to confirm your account, then sign in.");
+        } else if (signUpData?.user?.identities?.length === 0) {
+          // Supabase silently returns a user with no identities for duplicate emails
+          setErr("__exists__");
+        } else {
+          setInfo("Check your email to confirm your account, then sign in.");
+        }
       }
     } finally { setBusy(false); }
   };

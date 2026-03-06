@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { supabase, dbToExp, dbToTrip, expToDb, tripToDb } from "./supabase";
 import { useAuth } from "./AuthContext";
 import Auth, { PasswordReset } from "./Auth";
+import * as XLSX from "xlsx";
 
 const DEFAULT_CATEGORIES = [
   { id: "personal",   label: "Personal", icon: "👤" },
@@ -9,7 +10,12 @@ const DEFAULT_CATEGORIES = [
   { id: "home",       label: "Home",     icon: "🏠" },
   { id: "investment", label: "Savings",  icon: "₹" },
 ];
-const PAY = [{ id: "cash", label: "Cash" }, { id: "bank", label: "Bank" }];
+const PAY = [
+  { id: "cash", label: "Cash" },
+  { id: "bank", label: "Bank" },
+  { id: "card", label: "Card" },
+  { id: "upi",  label: "UPI"  },
+];
 
 const formatINR = (n) => {
   if (n == null || n === "") return "\u20B90";
@@ -86,6 +92,13 @@ export default function ExpenseTracker() {
   const [catMod,     setCatMod]     = useState(false);
   const [editCats,   setEditCats]   = useState(DEFAULT_CATEGORIES);
   const [catSaving,  setCatSaving]  = useState(false);
+  const [fDateFrom,   setFDateFrom]   = useState(null);
+  const [fDateTo,     setFDateTo]     = useState(null);
+  const [dispName,    setDispName]    = useState("");
+  const [savingName,  setSavingName]  = useState(false);
+  const [profPwSent,  setProfPwSent]  = useState(false);
+  const [confirmDel,  setConfirmDel]  = useState(false);
+  const [deletingAcc, setDeletingAcc] = useState(false);
   // Persisted feedback: counts how many times the user has chosen each note from a suggestion/autocomplete.
   // Stored in localStorage so it accumulates across sessions without needing a DB migration.
   const [noteFeedback, setNoteFeedback] = useState(() => {
@@ -288,6 +301,12 @@ export default function ExpenseTracker() {
       .then(({ data }) => setUserKey(data?.key_value || null));
   }, [userId]);
 
+  // Load display name from user metadata
+  useEffect(() => {
+    const name = session?.user?.user_metadata?.display_name;
+    if (name) setDispName(name);
+  }, [session]);
+
   const handleGenerateKey = useCallback(async () => {
     setKeyLoading(true);
     const chars = "abcdefghjkmnpqrstuvwxyz";
@@ -363,7 +382,7 @@ td.t2 { color: #666; white-space: nowrap; }
 </head>
 <body>
 <div class="header">
-  <div class="brand">\u20B9 Gurjar Books</div>
+  <div class="brand">\u20B9 Expense Tracker</div>
   <div class="subtitle">Expense Report &middot; ${periodLabel}</div>
   <div class="meta">Period: <b>${dateRange}</b> &nbsp;&middot;&nbsp; Generated: ${generated}${fPay !== "all" ? ` &nbsp;&middot;&nbsp; ${fPay === "cash" ? "Cash" : "Bank"} only` : ""}</div>
 </div>
@@ -387,7 +406,7 @@ td.t2 { color: #666; white-space: nowrap; }
     <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
   </div>
 </div>
-<div class="footer">Gurjar Books Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
+<div class="footer">Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
 <script>document.title = "${fileName}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
 </body>
 </html>`;
