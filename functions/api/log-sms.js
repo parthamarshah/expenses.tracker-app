@@ -66,8 +66,10 @@ export async function onRequestPost(context) {
   if (category.startsWith("trip_")) {
     tripId = category.replace("trip_", "");
     catId = "trip";
+  } else if (category.startsWith("custom_") || ["personal", "work", "home", "investment"].includes(category)) {
+    catId = category;
   } else {
-    const catMap = { personal: "personal", work: "work", home: "home", savings: "investment", investment: "investment" };
+    const catMap = { savings: "investment" };
     catId = catMap[category] || "personal";
   }
 
@@ -112,10 +114,16 @@ function isDebitSms(sms) {
   if (/\botp\b/.test(s) || /one.time.pass/i.test(s) || /verification\s+code/i.test(s)) return false;
 
   // Skip "transaction failed" / "declined" messages
-  if (/(?:transaction|payment)\s+(?:failed|declined|unsuccessful|not\s+processed)/i.test(sms)) return false;
+  if (/(?:transaction|payment|txn)\s+(?:failed|declined|unsuccessful|not\s+processed)/i.test(sms)) return false;
 
   // Skip balance alerts with no debit keyword
-  if (/available\s+balance/i.test(s) && !/debit|withdrawn|transferred/i.test(s)) return false;
+  if (/available\s+balance/i.test(s) && !/debit|withdrawn|transferred|sent|paid/i.test(s)) return false;
+  if (/balance.*(?:is|:)\s*(?:rs|inr|₹)/i.test(s) && !/debit|withdrawn|transferred|sent|paid/i.test(s)) return false;
+
+  // Skip promotional / informational messages
+  if (/dear\s+customer.*(?:important|update|alert)|scheduled\s+maintenance|downtime/i.test(s)) return false;
+  if (/reward\s*point|(?:get|earn|win)\s+cashback|limit\s*(?:increased|enhanced|revised)/i.test(s)) return false;
+  if (/login\s+detected|security\s+alert|suspicious\s+(?:activity|login)/i.test(s)) return false;
 
   // Skip credit / refund / reversal messages (where money came IN)
   // Only skip if the primary action is credit — "debited and credited" is a transfer, not an expense
@@ -125,8 +133,8 @@ function isDebitSms(sms) {
   if (/money\s+received/i.test(s)) return false;
 
   // Must contain at least one debit-type keyword
-  // "Sent Rs.X" is the HDFC UPI push notification format
-  return /debit(?:ed)?|withdrawn|withdrawal|\bsent\b|spent|paid|purchase[d]?|transfer(?:red)?\s+from|payment\s+of|\bemi\b/i.test(sms);
+  // Covers HDFC, SBI, ICICI, Axis, PNB, BOB, IDFC First, Yes Bank
+  return /debit(?:ed)?|withdrawn|withdrawal|\bsent\b|spent|paid|purchase[d]?|transfer(?:red)?\s+from|payment\s+of|\bemi\b|\btxn\b|debited\s+by|money\s+sent|bill\s+payment|top.?up/i.test(sms);
 }
 
 /**
@@ -135,33 +143,36 @@ function isDebitSms(sms) {
  */
 function parseSmsAmount(sms) {
   const patterns = [
-    // "Rs.250.00" / "INR 1,000" — most common
-    /(?:Rs\.?|INR)\s*([\d,]+(?:\.\d{1,2})?)/i,
+    // "Rs.250.00" / "Rs 250" / "INR 1,000" / "₹500" — most common across all banks
+    /(?:Rs\.?|INR|₹)\s*([\d,]+(?:\.\d{1,2})?)/i,
 
-    // "debited with INR 500" / "debited for Rs.80"
-    /debit(?:ed)?\s+(?:with|for|of)?\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    // "debited with INR 500" / "debited for Rs.80" / "debited by Rs.200" (SBI/PNB)
+    /debit(?:ed)?\s+(?:with|for|of|by)?\s+(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
 
     // "spent Rs.450" / "paid Rs.90 via"
-    /(?:spent|paid(?:\s+via)?)\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /(?:spent|paid(?:\s+via)?)\s+(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
 
     // "500.00 has been debited" / "1,250 debited"
     /([\d,]+(?:\.\d{1,2})?)\s*(?:INR\s*)?has\s+been\s+debited/i,
     /([\d,]+(?:\.\d{1,2})?)\s+(?:INR\s*)?debited\b/i,
 
-    // "transaction of Rs.1500" / "purchase of INR 200"
-    /(?:transaction|purchase)\s+of\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    // "transaction of Rs.1500" / "purchase of INR 200" / "Txn of Rs.500" (ICICI/Axis)
+    /(?:transaction|purchase|txn)\s+(?:of|for)\s+(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
 
     // "INR 2000 transferred from" / "Rs.5000 withdrawn"
-    /(?:INR|Rs\.?)\s*([\d,]+(?:\.\d{1,2})?)\s+(?:transferred\s+from|withdrawn|debited)/i,
+    /(?:INR|Rs\.?|₹)\s*([\d,]+(?:\.\d{1,2})?)\s+(?:transferred\s+from|withdrawn|debited)/i,
 
     // "payment of Rs.15000" (credit card bill, utility)
-    /payment\s+of\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /payment\s+of\s+(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
 
     // "withdrawn Rs.10000 at ATM"
-    /withdrawn\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /withdrawn\s+(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
 
     // EMI: "EMI of Rs.2500 due"
-    /EMI\s+(?:of|amount)?\s+(?:Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+    /EMI\s+(?:of|amount)?\s+(?:Rs\.?|INR|₹)?\s*([\d,]+(?:\.\d{1,2})?)/i,
+
+    // "Rupees 500" / "Rupees 1,000.00" (some SBI/PNB formats)
+    /Rupees?\s+([\d,]+(?:\.\d{1,2})?)/i,
   ];
 
   for (const pat of patterns) {
@@ -188,6 +199,9 @@ function parseSmsNote(sms) {
     return m ? `EMI — ${m[1].toUpperCase()}` : "EMI Payment";
   }
 
+  // UPI LITE top-up
+  if (/UPI\s+LITE\s+top.?up/i.test(sms)) return "UPI LITE Top-up";
+
   // Credit card bill payment
   if (/credit\s+card.*payment|payment.*toward.*credit\s+card/i.test(sms)) return "Credit Card Payment";
 
@@ -201,13 +215,22 @@ function parseSmsNote(sms) {
     // Card swipe merchant: "at AMAZON.IN on" or "at SWIGGY via"
     /\bat\s+([A-Za-z][A-Za-z0-9 &\-\.\/]{2,35}?)(?=\s+on\s|\s+via\s|\s+ref|\s+\d{2}|[,.]|$)/i,
 
+    // "Txn at MERCHANT" (ICICI, Axis style)
+    /txn\s+at\s+([A-Za-z][A-Za-z0-9 &\-\.\/]{2,35}?)(?=\s+on|\s+ref|[,.]|$)/i,
+
     // VPA / UPI ID (e.g., merchant@upi)
     /(?:VPA|UPI\s*[:\-]?\s*)([A-Za-z0-9._-]+@[A-Za-z0-9]+)/i,
 
-    // "toward LOAN / SUBSCRIPTION" etc.
-    /\btoward\s+([A-Za-z][A-Za-z0-9 &\-\.]{2,35}?)(?=\s+for|\s+of|\s+on|\s*$)/i,
+    // "toward(s) LOAN / SUBSCRIPTION" etc.
+    /\btowards?\s+([A-Za-z][A-Za-z0-9 &\-\.]{2,35}?)(?=\s+for|\s+of|\s+on|\s*$)/i,
 
-    // Remarks / Narration / Description fields
+    // "to a/c XXXX1234 BENEFICIARY NAME" (SBI NEFT/IMPS)
+    /to\s+a\/c\s+\w+\s+([A-Za-z][A-Za-z ]{2,35}?)(?=\s+on|\s+ref|[,.]|$)/i,
+
+    // "Info: UPI/merchant/txnref" (SBI UPI format)
+    /Info:\s*UPI\/([A-Za-z][A-Za-z0-9 &\-\.]{2,30})/i,
+
+    // Remarks / Narration / Description fields (all banks)
     /(?:Remarks|Narration|Description|Info)\s*[:\-]\s*([A-Za-z0-9][A-Za-z0-9 &\-\/\.]{2,35})/i,
   ];
 

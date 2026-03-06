@@ -106,21 +106,45 @@ function AuthInner() {
     } finally { setBusy(false); }
   };
 
+  const [resending, setResending] = useState(false);
+  const [signedUpEmail, setSignedUpEmail] = useState("");
+
+  const handleResend = async () => {
+    if (!signedUpEmail) return;
+    setResending(true);
+    try {
+      const { error } = await supabase.auth.resend({ type: "signup", email: signedUpEmail });
+      if (error) setErr(error.message);
+      else setInfo("Confirmation email resent! Check your inbox and spam folder.");
+    } finally { setResending(false); }
+  };
+
   const handle = async () => {
     if (mode === "forgot") { handleForgot(); return; }
     setErr(""); setInfo("");
     if (!email.trim() || !password) { setErr("Email and password required"); return; }
+    if (password.length < 6) { setErr("Password must be at least 6 characters"); return; }
     setBusy(true);
     try {
       if (mode === "login") {
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-        if (error) setErr(error.message);
+        if (error) {
+          if (/email.*not.*confirmed/i.test(error.message))
+            setErr("Please confirm your email first. Check your inbox (and spam folder).");
+          else if (/invalid.*credentials|invalid.*password|invalid.*login/i.test(error.message))
+            setErr("Wrong email or password. Try again or reset your password.");
+          else setErr(error.message);
+        }
       } else {
         const { error } = await supabase.auth.signUp({ email: email.trim(), password });
         if (error) {
           if (/already registered|already exists|already.*sign/i.test(error.message)) setErr("__exists__");
           else setErr(error.message);
-        } else setInfo("Check your email to confirm your account, then sign in.");
+        } else {
+          setSignedUpEmail(email.trim());
+          setInfo("__confirm__");
+          setTimeout(() => { setMode("login"); setPassword(""); }, 4000);
+        }
       }
     } finally { setBusy(false); }
   };
@@ -148,7 +172,9 @@ function AuthInner() {
         {err === "__exists__" ? (<>Account already exists — <button onClick={() => reset("login")} style={{ background: "none", border: "none", padding: 0, fontSize: 14, fontWeight: 700, color: "#CC0000", cursor: "pointer", textDecoration: "underline" }}>try signing in</button></>) : err}
       </div>}
       {info && <div style={{ background: "#F0F7FF", border: "1.5px solid #CCE0FF", borderRadius: 10,
-                             padding: "12px 16px", fontSize: 14, color: "#0055CC", marginBottom: 14 }}>{info}</div>}
+                             padding: "12px 16px", fontSize: 14, color: "#0055CC", marginBottom: 14 }}>
+        {info === "__confirm__" ? (<>Check your email to confirm your account, then sign in.{" "}<button onClick={handleResend} disabled={resending} style={{ background: "none", border: "none", padding: 0, fontSize: 14, fontWeight: 700, color: "#0055CC", cursor: "pointer", textDecoration: "underline" }}>{resending ? "Sending…" : "Resend email"}</button></>) : info}
+      </div>}
 
       {/* Email */}
       <input type="email" placeholder="Email" value={email} autoComplete="email"

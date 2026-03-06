@@ -33,21 +33,28 @@ export async function onRequestGet(context) {
 
   const userId = keyRow.user_id;
 
-  // Fixed categories
-  const fixed = [
+  // Default categories (fallback if user has no custom prefs)
+  const DEFAULT_CATS = [
     { id: "personal", label: "Personal" },
     { id: "work", label: "Work" },
     { id: "home", label: "Home" },
-    { id: "savings", label: "Savings" },
+    { id: "investment", label: "Savings" },
   ];
 
-  // Fetch active trips (not archived) for this user
-  const { data: tripRows } = await supabase
-    .from("trips")
-    .select("id, name, pinned")
-    .eq("user_id", userId)
-    .eq("archived", false)
-    .order("created_at", { ascending: false });
+  // Load user's custom categories from user_prefs
+  const [{ data: prefsRow }, { data: tripRows }] = await Promise.all([
+    supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
+    supabase.from("trips").select("id, name, pinned").eq("user_id", userId).eq("archived", false).order("created_at", { ascending: false }),
+  ]);
+
+  let userCats = DEFAULT_CATS;
+  if (prefsRow?.cats_json) {
+    try {
+      const saved = JSON.parse(prefsRow.cats_json);
+      const visible = saved.filter(c => !c.hidden);
+      if (visible.length > 0) userCats = visible.map(c => ({ id: c.id, label: c.label }));
+    } catch {}
+  }
 
   // Determine which trips are "active" — had an expense in last 7 days, or pinned
   const trips = tripRows || [];
@@ -67,7 +74,7 @@ export async function onRequestGet(context) {
   }
 
   const categories = [
-    ...fixed,
+    ...userCats,
     ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈ ${t.name}` })),
   ];
 

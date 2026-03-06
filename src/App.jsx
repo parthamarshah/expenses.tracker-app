@@ -78,6 +78,10 @@ export default function ExpenseTracker() {
   const [insPeriod,   setInsPeriod]   = useState("month");
   const [insMonth,    setInsMonth]    = useState(() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; });
   const [insYear,     setInsYear]     = useState(() => new Date().getFullYear());
+  // History period: "all" | "month" | "year"
+  const [histPeriod,  setHistPeriod]  = useState("all");
+  const [histMonth,   setHistMonth]   = useState(() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; });
+  const [histYear,    setHistYear]    = useState(() => new Date().getFullYear());
   const [editDate,  setEditDate]  = useState("");
   const [keyMod,     setKeyMod]     = useState(false);
   const [userKey,    setUserKey]    = useState(null);
@@ -86,6 +90,7 @@ export default function ExpenseTracker() {
   const [catMod,     setCatMod]     = useState(false);
   const [editCats,   setEditCats]   = useState(DEFAULT_CATEGORIES);
   const [catSaving,  setCatSaving]  = useState(false);
+  const [setupTab,   setSetupTab]   = useState("ios"); // "ios" | "android"
   // Persisted feedback: counts how many times the user has chosen each note from a suggestion/autocomplete.
   // Stored in localStorage so it accumulates across sessions without needing a DB migration.
   const [noteFeedback, setNoteFeedback] = useState(() => {
@@ -123,10 +128,17 @@ export default function ExpenseTracker() {
       if (prefsRow?.cats_json) {
         try {
           const saved = JSON.parse(prefsRow.cats_json);
-          // merge: keep IDs + order from defaults, apply saved label/icon
-          const merged = DEFAULT_CATEGORIES.map(def => {
+          // merge: start with saved array, ensure all 4 defaults exist
+          const defIds = DEFAULT_CATEGORIES.map(d => d.id);
+          const merged = [];
+          // First add defaults in order, applying any saved overrides
+          DEFAULT_CATEGORIES.forEach(def => {
             const s = saved.find(x => x.id === def.id);
-            return s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def;
+            merged.push(s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def);
+          });
+          // Then add custom categories (non-default IDs)
+          saved.filter(s => !defIds.includes(s.id)).forEach(s => {
+            merged.push({ id: s.id, label: s.label || "Custom", icon: s.icon || "📌", hidden: !!s.hidden });
           });
           setCats(merged);
         } catch {}
@@ -311,6 +323,11 @@ export default function ExpenseTracker() {
     navigator.clipboard?.writeText(userKey).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
   }, [userKey, sToast]);
 
+  const API_BASE = "https://expenses.gurjarbooks.com";
+  const copyText = useCallback((text) => {
+    navigator.clipboard?.writeText(text).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
+  }, [sToast]);
+
   // ── CRUD — all optimistic ─────────────────────────────────────────────────
   const doSave = useCallback(async () => {
     const v = Math.round(Number(amt));
@@ -404,6 +421,9 @@ export default function ExpenseTracker() {
   // ── Filtered list ─────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let l = [...exps];
+    // Date range filter
+    if (histPeriod === "month") l = l.filter(e => { const d = new Date(e.date); return d.getMonth() === histMonth.month && d.getFullYear() === histMonth.year; });
+    else if (histPeriod === "year") l = l.filter(e => new Date(e.date).getFullYear() === histYear);
     if (selTrip) l = l.filter(e => e.tripId === selTrip);
     else if (fCat !== "all") {
       if (fCat.startsWith("trip_")) l = l.filter(e => e.tripId === fCat.replace("trip_", ""));
@@ -419,7 +439,7 @@ export default function ExpenseTracker() {
       });
     }
     return l;
-  }, [exps, fCat, fPay, sq, selTrip, allCats]);
+  }, [exps, fCat, fPay, sq, selTrip, allCats, histPeriod, histMonth, histYear]);
 
   // ── Export ────────────────────────────────────────────────────────────────
   const esc = useCallback((v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"), []);
@@ -540,9 +560,9 @@ td.t2 { color: #666; white-space: nowrap; }
 
   const saveCustomCats = useCallback(async () => {
     setCatSaving(true);
-    const cleaned = editCats.map(c => {
+    const cleaned = editCats.filter(c => c.label.trim()).map(c => {
       const def = DEFAULT_CATEGORIES.find(d => d.id === c.id);
-      return { id: c.id, label: c.label.trim() || def.label, icon: c.icon.trim() || def.icon, hidden: !!c.hidden };
+      return { id: c.id, label: c.label.trim() || (def ? def.label : "Custom"), icon: c.icon.trim() || (def ? def.icon : "📌"), hidden: !!c.hidden };
     });
     setCats(cleaned);
     setCatMod(false);
@@ -605,6 +625,29 @@ td.t2 { color: #666; white-space: nowrap; }
 
   const cyclePeriod = useCallback(() => {
     setInsPeriod(p => p === "month" ? "year" : p === "year" ? "all" : "month");
+  }, []);
+
+  // History period helpers
+  const histPeriodLabel = useMemo(() => {
+    if (histPeriod === "all") return "All Time";
+    if (histPeriod === "year") return histYear.toString();
+    return new Date(histMonth.year, histMonth.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  }, [histMonth, histYear, histPeriod]);
+
+  const shiftHistPeriod = useCallback((dir) => {
+    if (histPeriod === "month") {
+      setHistMonth(prev => {
+        let m = prev.month + dir, y = prev.year;
+        if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
+        return { year: y, month: m };
+      });
+    } else if (histPeriod === "year") {
+      setHistYear(prev => prev + dir);
+    }
+  }, [histPeriod]);
+
+  const cycleHistPeriod = useCallback(() => {
+    setHistPeriod(p => p === "all" ? "month" : p === "month" ? "year" : "all");
   }, []);
 
   // ── Trip insights ─────────────────────────────────────────────────────────
@@ -787,6 +830,18 @@ td.t2 { color: #666; white-space: nowrap; }
             </div>
 
             {!selTrip && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, background: G.bg2, borderRadius: 12, padding: "4px 4px" }}>
+                {histPeriod !== "all" ? (
+                  <button onClick={() => shiftHistPeriod(-1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u2039"}</button>
+                ) : <div style={{ width: 36 }} />}
+                <button onClick={cycleHistPeriod} style={{ flex: 1, padding: "7px 0", border: "none", background: "transparent", fontSize: 14, fontWeight: 700, cursor: "pointer", color: G.t1, textAlign: "center" }}>{histPeriodLabel}</button>
+                {histPeriod !== "all" ? (
+                  <button onClick={() => shiftHistPeriod(1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u203A"}</button>
+                ) : <div style={{ width: 36 }} />}
+              </div>
+            )}
+
+            {!selTrip && (
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <select value={fCat} onChange={e => setFCat(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Categories</option>
@@ -899,11 +954,13 @@ td.t2 { color: #666; white-space: nowrap; }
                 <div style={{ fontSize: 22, fontWeight: 800, marginTop: 5, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
                 <div style={{ fontSize: 12, color: "#666", marginTop: 3 }}>{ins.mc} entries</div>
               </div>
+              {!cats.find(c => c.id === "investment")?.hidden && (
               <div style={{ flex: 1, borderRadius: 14, padding: "14px 14px", background: G.bg2, border: `1.5px solid ${G.bdr}` }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase" }}>Savings</div>
                 <div style={{ fontSize: 22, fontWeight: 800, marginTop: 5, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
                 <div style={{ fontSize: 12, color: G.tm, marginTop: 3 }}>{insPeriod === "all" ? "all time" : insPeriod === "year" ? insYear : new Date(insMonth.year, insMonth.month).toLocaleDateString("en-IN", { month: "short" })}</div>
               </div>
+              )}
             </div>
 
             {/* Yearly bar chart — monthly breakdown */}
@@ -967,7 +1024,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
             {activeTrips.length > 0 && <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: G.tm, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Active</div>
-              {activeTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? Math.min(100, (tot / t.budget) * 100) : 0; const barCol = pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
+              {activeTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? (tot / t.budget) * 100 : 0; const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
                 <div key={t.id} onClick={() => setTripDet(t.id)} style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, borderLeft: `4px solid ${G.bk}`, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
@@ -975,7 +1032,7 @@ td.t2 { color: #666; white-space: nowrap; }
                   </div>
                   {t.budget > 0 && <div style={{ marginTop: 10 }}>
                     <div style={{ height: 5, background: G.bg3, borderRadius: 5, overflow: "hidden" }}>
-                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${pct}%`, transition: "width .4s" }} />
+                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${Math.min(100, pct)}%`, transition: "width .4s" }} />
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: G.tm, marginTop: 4 }}>
                       <span style={{ color: barCol, fontWeight: 600 }}>{Math.round(pct)}% used</span>
@@ -988,7 +1045,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
             {inactiveTrips.length > 0 && <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: G.tm, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Hidden (7+ days inactive)</div>
-              {inactiveTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? Math.min(100, (tot / t.budget) * 100) : 0; const barCol = pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
+              {inactiveTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? (tot / t.budget) * 100 : 0; const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
                 <div key={t.id} onClick={() => setTripDet(t.id)} style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, borderLeft: `4px solid ${G.lt}`, cursor: "pointer", opacity: .7 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
@@ -996,7 +1053,7 @@ td.t2 { color: #666; white-space: nowrap; }
                   </div>
                   {t.budget > 0 && <div style={{ marginTop: 10 }}>
                     <div style={{ height: 5, background: G.bg3, borderRadius: 5, overflow: "hidden" }}>
-                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${pct}%`, transition: "width .4s" }} />
+                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${Math.min(100, pct)}%`, transition: "width .4s" }} />
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: G.tm, marginTop: 4 }}>
                       <span style={{ color: barCol, fontWeight: 600 }}>{Math.round(pct)}% used</span>
@@ -1030,10 +1087,10 @@ td.t2 { color: #666; white-space: nowrap; }
                 </div>
                 <div style={{ fontSize: 30, fontWeight: 800, marginTop: 12, letterSpacing: -1 }}>{formatINR(ti.tot)}</div>
                 {trip.budget > 0 && (() => {
-                  const pct = Math.min(100, (ti.tot / trip.budget) * 100);
+                  const pct = (ti.tot / trip.budget) * 100;
                   const remaining = trip.budget - ti.tot;
                   const over = remaining < 0;
-                  const barCol = pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759";
+                  const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759";
                   return (
                     <div style={{ marginTop: 14 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
@@ -1041,7 +1098,7 @@ td.t2 { color: #666; white-space: nowrap; }
                         <span style={{ fontSize: 13, fontWeight: 700, color: over ? "#FF6B6B" : "#AAA" }}>{over ? `${formatINR(Math.abs(remaining))} over` : `${formatINR(remaining)} left`}</span>
                       </div>
                       <div style={{ height: 8, background: "#2A2A2A", borderRadius: 8, overflow: "hidden" }}>
-                        <div style={{ height: 8, borderRadius: 8, background: barCol, width: `${pct}%`, transition: "width .6s ease" }} />
+                        <div style={{ height: 8, borderRadius: 8, background: barCol, width: `${Math.min(100, pct)}%`, transition: "width .6s ease" }} />
                       </div>
                       <div style={{ fontSize: 12, color: barCol, fontWeight: 600, marginTop: 5, textAlign: "right" }}>{Math.round(pct)}% used</div>
                     </div>
@@ -1120,39 +1177,129 @@ td.t2 { color: #666; white-space: nowrap; }
       {/* ══════ KEY MODAL ══════ */}
       {keyMod && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setKeyMod(false)}>
-          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px" }} onClick={e => e.stopPropagation()}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
-            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Shortcut API Key</div>
-            <div style={{ fontSize: 14, color: G.t3, marginBottom: 20, lineHeight: 1.5 }}>
-              Generate a key and enter it once in the iPhone Shortcut. Anyone with this key can log expenses to your account — keep it private.
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>SMS Automation</div>
+            <div style={{ fontSize: 14, color: G.t3, marginBottom: 16, lineHeight: 1.5 }}>
+              Auto-log bank SMS as expenses. Generate your API key, then follow the setup for your phone.
             </div>
 
+            {/* API Key Section */}
             {userKey ? (
               <>
-                <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 12, gap: 12 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 800, letterSpacing: 4, flex: 1, color: G.t1 }}>{userKey}</span>
-                  <button onClick={copyKey} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Copy</button>
+                <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Your Key</div>
+                    <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, letterSpacing: 3, color: G.t1 }}>{userKey}</span>
+                  </div>
+                  <button onClick={copyKey} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", flexShrink: 0, marginLeft: "auto" }}>Copy</button>
                 </div>
                 <button onClick={handleGenerateKey} disabled={keyLoading}
-                  style={{ width: "100%", padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>
-                  {keyLoading ? "Generating…" : "Regenerate Key"}
+                  style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1.5px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>
+                  {keyLoading ? "Generating\u2026" : "Regenerate Key"}
                 </button>
-                <div style={{ fontSize: 12, color: G.tm, textAlign: "center", marginBottom: 16 }}>Regenerating will break the old Shortcut — update the key value in Shortcuts too.</div>
               </>
             ) : (
               <button onClick={handleGenerateKey} disabled={keyLoading}
                 style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: G.bk, color: G.wh, fontSize: 17, fontWeight: 700, cursor: "pointer", marginBottom: 16 }}>
-                {keyLoading ? "Generating…" : "Generate Key"}
+                {keyLoading ? "Generating\u2026" : "Generate Key"}
               </button>
             )}
 
-            <div style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", fontSize: 13, color: G.t2, lineHeight: 1.7 }}>
-              <div style={{ fontWeight: 700, marginBottom: 4, fontSize: 13 }}>Setup steps</div>
-              <div>1. Tap <b>Generate Key</b> and copy the key</div>
-              <div>2. Open <b>Shortcuts → My Shortcuts</b></div>
-              <div>3. Edit your bank SMS shortcut</div>
-              <div>4. Set the <b>key</b> field to your copied key</div>
-              <div>5. Done — bank SMS will auto-log expenses</div>
+            {/* Platform Tabs */}
+            <div style={{ display: "flex", background: G.bg2, borderRadius: 10, padding: 3, marginBottom: 16 }}>
+              {[["ios", "iPhone"], ["android", "Android"]].map(([id, label]) => (
+                <button key={id} onClick={() => setSetupTab(id)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, background: setupTab === id ? G.bk : "transparent", color: setupTab === id ? G.wh : G.t3 }}>{label}</button>
+              ))}
+            </div>
+
+            {/* iPhone Setup */}
+            {setupTab === "ios" && (
+              <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>iPhone Shortcuts Setup</div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Create the Shortcut</div>
+                  <div>Open <b>Shortcuts</b> app {"\u2192"} tap <b>+</b> {"\u2192"} name it <b>"Log Expense"</b></div>
+                  <div style={{ marginTop: 4 }}>Add these actions in order:</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
+                    <div>1. <b>Receive</b> Shortcut Input</div>
+                    <div>2. <b>Get contents of URL</b></div>
+                    <div style={{ paddingLeft: 16, color: G.t3 }}>URL: <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/categories?key={userKey || "YOUR_KEY"}</span></div>
+                    <div style={{ paddingLeft: 16, color: G.t3 }}>Method: GET</div>
+                    <div>3. <b>Get Dictionary Value</b> for key "categories"</div>
+                    <div>4. <b>Choose from List</b> (shows your categories)</div>
+                    <div>5. <b>Get Dictionary Value</b> for key "id" from Chosen Item</div>
+                    <div>6. <b>Get contents of URL</b></div>
+                    <div style={{ paddingLeft: 16, color: G.t3 }}>URL: <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/log-sms</span></div>
+                    <div style={{ paddingLeft: 16, color: G.t3 }}>Method: POST, JSON body:</div>
+                    <div style={{ paddingLeft: 16, fontFamily: "monospace", fontSize: 11, color: G.t3 }}>sms: Shortcut Input, key: {userKey || "YOUR_KEY"}, category: (step 5 result)</div>
+                  </div>
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Create Automation</div>
+                  <div>Go to <b>Automation</b> tab {"\u2192"} <b>+</b> {"\u2192"} <b>Message</b></div>
+                  <div>Set <b>Sender contains</b>: your bank name (e.g. "HDFC")</div>
+                  <div>Set <b>Message contains</b>: <b>debited</b></div>
+                  <div style={{ fontSize: 12, color: G.t3, marginTop: 2 }}>This prevents triggering on OTPs, promotions, and balance alerts.</div>
+                  <div style={{ marginTop: 4 }}>Action: <b>Run Shortcut</b> {"\u2192"} select "Log Expense"</div>
+                  <div>Input: <b>Message</b> (the SMS body)</div>
+                  <div>Turn off <b>"Ask Before Running"</b></div>
+                </div>
+
+                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
+                  Tip: For multiple banks, create one automation per bank sender. They all use the same "Log Expense" shortcut.
+                </div>
+              </div>
+            )}
+
+            {/* Android Setup */}
+            {setupTab === "android" && (
+              <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Android Setup (MacroDroid)</div>
+
+                <a href="https://play.google.com/store/apps/details?id=com.arlosoft.macrodroid" target="_blank" rel="noopener noreferrer"
+                  style={{ display: "block", padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 14, fontWeight: 700, textAlign: "center", textDecoration: "none", marginBottom: 12, cursor: "pointer" }}>
+                  Get MacroDroid (Free) {"\u2192"}
+                </a>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Setup Steps</div>
+                  <div>1. Install <b>MacroDroid</b> from Play Store</div>
+                  <div>2. Tap <b>Add Macro</b> {"\u2192"} <b>Trigger</b> {"\u2192"} <b>SMS Received</b></div>
+                  <div>3. Set sender filter to your bank (e.g. "HDFCBK")</div>
+                  <div>4. Optionally add content filter: "debited"</div>
+                  <div>5. <b>Action</b> {"\u2192"} <b>HTTP Request</b></div>
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>HTTP Request Settings</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.7 }}>
+                    <div><b>Method:</b> POST</div>
+                    <div><b>URL:</b> <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/log-sms</span></div>
+                    <div><b>Content-Type:</b> application/json</div>
+                    <div><b>Body:</b></div>
+                    <div style={{ fontFamily: "monospace", fontSize: 11, background: G.bg2, padding: "8px", borderRadius: 6, marginTop: 4, wordBreak: "break-all" }}>
+                      {`{"sms":"[sms_body]","key":"${userKey || "YOUR_KEY"}","category":"personal"}`}
+                    </div>
+                    <div style={{ fontSize: 11, color: G.t3, marginTop: 4 }}>[sms_body] is a MacroDroid built-in variable for SMS text.</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
+                  Note: MacroDroid free tier allows 5 macros. You only need 1 for this. For category selection, use "personal" as default — or set up a Tasker/MacroDroid popup to pick before sending.
+                </div>
+              </div>
+            )}
+
+            {/* API Endpoint */}
+            <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 10, padding: "10px 14px", marginTop: 14, gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase" }}>API Endpoint</div>
+                <div style={{ fontFamily: "monospace", fontSize: 11, color: G.t2, marginTop: 2, wordBreak: "break-all" }}>{API_BASE}/api/log-sms</div>
+              </div>
+              <button onClick={() => copyText(`${API_BASE}/api/log-sms`)} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Copy</button>
             </div>
           </div>
         </div>
@@ -1164,14 +1311,20 @@ td.t2 { color: #666; white-space: nowrap; }
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Customise Categories</div>
-            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels, icons, or hide categories you don't use.</div>
-            {editCats.map((c, i) => (
+            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels, icons, hide or add new categories.</div>
+            {editCats.map((c, i) => {
+              const isDef = DEFAULT_CATEGORIES.some(d => d.id === c.id);
+              return (
               <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, opacity: c.hidden ? 0.45 : 1 }}>
                 <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 44, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
-                <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={DEFAULT_CATEGORIES[i].label} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
+                <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={isDef ? DEFAULT_CATEGORIES.find(d => d.id === c.id).label : "Category name"} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
                 <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 38, height: 38, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "○" : "●"}</button>
-              </div>
-            ))}
+                {!isDef && <button onClick={() => setEditCats(p => p.filter((_, j) => j !== i))} style={{ width: 38, height: 38, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 18, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title="Remove">{"\u2715"}</button>}
+              </div>);
+            })}
+            {editCats.length < 8 && (
+              <button onClick={() => setEditCats(p => [...p, { id: "custom_" + Date.now().toString(36), label: "", icon: "📌", hidden: false }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Category</button>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={() => setEditCats(DEFAULT_CATEGORIES.map(c => ({ ...c })))} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Reset</button>
               <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
