@@ -9,7 +9,10 @@ const DEFAULT_CATEGORIES = [
   { id: "home",       label: "Home",     icon: "🏠" },
   { id: "investment", label: "Savings",  icon: "₹" },
 ];
-const PAY = [{ id: "cash", label: "Cash" }, { id: "bank", label: "Bank" }];
+const PAY = [{ id: "cash", label: "Cash" }, { id: "bank", label: "Bank" }, { id: "card", label: "Card" }];
+
+// iCloud Shortcut link — update this after sharing/re-sharing the shortcut
+const SHORTCUT_ICLOUD_URL = "";
 
 const formatINR = (n) => {
   if (n == null || n === "") return "\u20B90";
@@ -91,6 +94,15 @@ export default function ExpenseTracker() {
   const [editCats,   setEditCats]   = useState(DEFAULT_CATEGORIES);
   const [catSaving,  setCatSaving]  = useState(false);
   const [setupTab,   setSetupTab]   = useState("ios"); // "ios" | "android"
+  const [banks,      setBanks]      = useState([]);
+  const [bankMod,    setBankMod]    = useState(false);
+  const [editBanks,  setEditBanks]  = useState([]);
+  const [bankSaving, setBankSaving] = useState(false);
+  const [profileMod, setProfileMod] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [delConfirm, setDelConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   // Persisted feedback: counts how many times the user has chosen each note from a suggestion/autocomplete.
   // Stored in localStorage so it accumulates across sessions without needing a DB migration.
   const [noteFeedback, setNoteFeedback] = useState(() => {
@@ -121,7 +133,7 @@ export default function ExpenseTracker() {
       const [{ data: expRows }, { data: tripRows }, { data: prefsRow }] = await Promise.all([
         supabase.from("expenses").select("*").eq("user_id", userId).order("date", { ascending: false }),
         supabase.from("trips").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
-        supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
+        supabase.from("user_prefs").select("cats_json, banks_json").eq("user_id", userId).maybeSingle(),
       ]);
       setExps((expRows  || []).map(dbToExp));
       setTrips((tripRows || []).map(dbToTrip));
@@ -142,6 +154,9 @@ export default function ExpenseTracker() {
           });
           setCats(merged);
         } catch {}
+      }
+      if (prefsRow?.banks_json) {
+        try { setBanks(JSON.parse(prefsRow.banks_json)); } catch {}
       }
       setDbReady(true);
 
@@ -194,6 +209,9 @@ export default function ExpenseTracker() {
     ...cats,
     ...[...activeTrips, ...inactiveTrips].map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips, inactiveTrips]);
+
+  // Visible categories only — used for history filter dropdowns
+  const visCats = useMemo(() => allCats.filter(c => !c.hidden), [allCats]);
 
   const quickAmts = useMemo(() => {
     const cutoff = Date.now() - 365 * 864e5;
@@ -296,6 +314,7 @@ export default function ExpenseTracker() {
   }, []);
 
   useEffect(() => { if (view === "add" && aRef.current) setTimeout(() => aRef.current?.focus(), 80); }, [view]);
+  useEffect(() => { if (session?.user?.user_metadata?.full_name) setProfileName(session.user.user_metadata.full_name); }, [session]);
 
   // ── Shortcut key management ───────────────────────────────────────────────
   useEffect(() => {
@@ -523,7 +542,7 @@ td.t2 { color: #666; white-space: nowrap; }
     <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
   </div>
 </div>
-<div class="footer">Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
+<div class="footer">Expense Tracker</div>
 <script>document.title = "${esc(fileName)}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
 </body>
 </html>`;
@@ -532,24 +551,37 @@ td.t2 { color: #666; white-space: nowrap; }
     else sToast("Allow pop-ups to export PDF", "err");
   }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast, session, esc]);
 
-  const doExportCSV = useCallback(() => {
+  const doExportXLSX = useCallback(async () => {
     if (filtered.length === 0) return;
+    sToast("Generating Excel…");
+    const ExcelJS = (await import("exceljs")).default;
     const getCatLabel = (e) => {
       if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
       return cats.find(c => c.id === e.category)?.label || e.category;
     };
-    const csvEsc = (v) => `"${String(v).replace(/"/g, '""')}"`;
-    const header = ["Date", "Time", "Category", "Note", "Payment Mode", "Amount (INR)"].join(",");
-    const csvRows = [...filtered].reverse().map(e =>
-      [tds(e.date), tts(e.date), csvEsc(getCatLabel(e)), csvEsc(e.note || ""), e.payMode === "cash" ? "Cash" : "Bank", e.amount].join(",")
-    );
-    const csv = [header, ...csvRows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Expenses");
+    ws.columns = [
+      { header: "Date", key: "date", width: 14 },
+      { header: "Time", key: "time", width: 10 },
+      { header: "Category", key: "category", width: 16 },
+      { header: "Note", key: "note", width: 30 },
+      { header: "Payment Mode", key: "payMode", width: 14 },
+      { header: "Amount (INR)", key: "amount", width: 14 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+    ws.autoFilter = { from: "A1", to: "F1" };
+    [...filtered].reverse().forEach(e => {
+      ws.addRow({ date: tds(e.date), time: tts(e.date), category: getCatLabel(e), note: e.note || "", payMode: PAY.find(p => p.id === e.payMode)?.label || e.payMode, amount: e.amount });
+    });
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = `Gurjar-Books-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
+    a.href = url; a.download = `Expenses-${new Date().toISOString().slice(0, 10)}.xlsx`; a.click();
     URL.revokeObjectURL(url);
-    sToast("CSV downloaded");
+    sToast("Excel downloaded");
   }, [filtered, cats, trips, sToast]);
 
   // ── Custom categories ─────────────────────────────────────────────────────
@@ -570,6 +602,24 @@ td.t2 { color: #666; white-space: nowrap; }
     setCatSaving(false);
     if (error) sToast("Sync error", "err");
   }, [editCats, userId, sToast]);
+
+  // ── Banks & Cards ───────────────────────────────────────────────────────
+  const openBankMod = useCallback(() => {
+    setEditBanks(banks.map(b => ({ ...b })));
+    setBankMod(true);
+  }, [banks]);
+
+  const saveBanks = useCallback(async () => {
+    setBankSaving(true);
+    const cleaned = editBanks.filter(b => b.label.trim()).map(b => ({
+      id: b.id, label: b.label.trim(), type: b.type || "bank", sender: (b.sender || "").trim(), last4: (b.last4 || "").trim(),
+    }));
+    setBanks(cleaned);
+    setBankMod(false);
+    const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, banks_json: JSON.stringify(cleaned) });
+    setBankSaving(false);
+    if (error) sToast("Sync error", "err");
+  }, [editBanks, userId, sToast]);
 
   // ── Insights ──────────────────────────────────────────────────────────────
   const insPeriodLabel = useMemo(() => {
@@ -681,7 +731,7 @@ td.t2 { color: #666; white-space: nowrap; }
   const getCI = (e) => { if (e.tripId) return "\u2708\uFE0F"; return cats.find(c => c.id === e.category)?.icon || "?"; };
 
   const navTo = (t) => { hap(); if (t === "list") { setSelTrip(null); setFCat("all"); setFPay("all"); setSq(""); } setSw({ id: null, dir: null }); setSwipeConf(null); setView(t); };
-  const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setView("list"); };
+  const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setHistPeriod("all"); setView("list"); };
 
   const B = (sel, children, onClick, extra = {}) => (
     <button onClick={onClick} style={{ padding: "7px 10px", borderRadius: 18, cursor: "pointer", fontSize: 13, fontWeight: sel ? 700 : 500, border: `2px solid ${sel ? G.bk : G.bdr}`, background: sel ? G.bk : G.bg, color: sel ? G.wh : G.t2, ...extra }}>{children}</button>
@@ -712,8 +762,8 @@ td.t2 { color: #666; white-space: nowrap; }
           </span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setKeyMod(true)} title="API Key" style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", fontSize: 15, color: G.t3, cursor: "pointer", lineHeight: 1 }}>🔑</button>
-          <button onClick={signOut} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 11px", fontSize: 13, fontWeight: 600, color: G.t3, cursor: "pointer" }}>Out</button>
+          <button onClick={() => setKeyMod(true)} title="SMS Automation" style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", fontSize: 15, color: G.t3, cursor: "pointer", lineHeight: 1 }}>🔑</button>
+          <button onClick={() => setProfileMod(true)} title="Profile" style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", fontSize: 15, color: G.t3, cursor: "pointer", lineHeight: 1 }}>👤</button>
         </div>
       </header>
 
@@ -845,7 +895,7 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <select value={fCat} onChange={e => setFCat(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Categories</option>
-                  {allCats.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  {visCats.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                 </select>
                 <select value={fPay} onChange={e => setFPay(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Modes</option>
@@ -864,7 +914,7 @@ td.t2 { color: #666; white-space: nowrap; }
               })()}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {filtered.length > 0 && (<>
-                  <button onClick={doExportCSV} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t3, cursor: "pointer", letterSpacing: 0.3 }}>CSV</button>
+                  <button onClick={doExportXLSX} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t3, cursor: "pointer", letterSpacing: 0.3 }}>Excel</button>
                   <button onClick={doExportPDF} style={{ background: G.bg2, border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t2, cursor: "pointer", letterSpacing: 0.3 }}>PDF</button>
                 </>)}
                 <span style={{ fontWeight: 800, fontSize: 16, color: G.t1 }}>{formatINR(filtered.reduce((s, e) => s + e.amount, 0))}</span>
@@ -993,7 +1043,7 @@ td.t2 { color: #666; white-space: nowrap; }
                 const c = allCats.find(x => x.id === cid) || cats[0];
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
                 return (
-                  <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
+                  <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span>{c.label}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
                     <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: G.dk, width: `${p}%`, transition: "width .4s" }} /></div>
                     <div style={{ fontSize: 12, color: G.tm, marginTop: 3, textAlign: "right" }}>{Math.round(p)}%</div>
@@ -1007,7 +1057,7 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>By Payment Mode <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>{"\u00B7"} tap to filter history</span></div>
               {Object.entries(ins.bp).sort((a, b) => b[1] - a[1]).map(([pid, a]) => {
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
-                return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
+                return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span>{PAY.find(x => x.id === pid)?.label || pid}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
                   <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: G.ac, width: `${p}%`, transition: "width .4s" }} /></div>
                   <div style={{ fontSize: 12, color: G.tm, marginTop: 3, textAlign: "right" }}>{Math.round(p)}%</div>
@@ -1178,7 +1228,11 @@ td.t2 { color: #666; white-space: nowrap; }
       {keyMod && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setKeyMod(false)}>
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div style={{ width: 30 }} />
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt }} />
+              <button onClick={() => setKeyMod(false)} style={{ background: "none", border: "none", fontSize: 20, color: G.t3, cursor: "pointer", padding: "2px 6px", lineHeight: 1 }}>{"\u2715"}</button>
+            </div>
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>SMS Automation</div>
             <div style={{ fontSize: 14, color: G.t3, marginBottom: 16, lineHeight: 1.5 }}>
               Auto-log bank SMS as expenses. Generate your API key, then follow the setup for your phone.
@@ -1206,6 +1260,24 @@ td.t2 { color: #666; white-space: nowrap; }
               </button>
             )}
 
+            {/* Banks & Cards */}
+            <div style={{ background: G.bg2, borderRadius: 12, padding: "12px 14px", marginBottom: 16 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: G.t1 }}>Banks & Cards</div>
+                  <div style={{ fontSize: 12, color: G.t3, marginTop: 2 }}>{banks.length === 0 ? "Add your banks to set up automations" : `${banks.length} configured`}</div>
+                </div>
+                <button onClick={openBankMod} style={{ padding: "7px 14px", borderRadius: 8, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>{banks.length === 0 ? "+ Add" : "Edit"}</button>
+              </div>
+              {banks.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                  {banks.map(b => (
+                    <span key={b.id} style={{ padding: "4px 10px", borderRadius: 6, background: G.bg, border: `1px solid ${G.bdr}`, fontSize: 12, color: G.t2 }}>{b.label}{b.last4 ? ` ·${b.last4}` : ""}{b.type === "credit_card" ? " 💳" : " 🏦"}</span>
+                  ))}
+                </div>
+              )}
+            </div>
+
             {/* Platform Tabs */}
             <div style={{ display: "flex", background: G.bg2, borderRadius: 10, padding: 3, marginBottom: 16 }}>
               {[["ios", "iPhone"], ["android", "Android"]].map(([id, label]) => (
@@ -1218,38 +1290,40 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
                 <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>iPhone Shortcuts Setup</div>
 
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Create the Shortcut</div>
-                  <div>Open <b>Shortcuts</b> app {"\u2192"} tap <b>+</b> {"\u2192"} name it <b>"Log Expense"</b></div>
-                  <div style={{ marginTop: 4 }}>Add these actions in order:</div>
-                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
-                    <div>1. <b>Receive</b> Shortcut Input</div>
-                    <div>2. <b>Get contents of URL</b></div>
-                    <div style={{ paddingLeft: 16, color: G.t3 }}>URL: <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/categories?key={userKey || "YOUR_KEY"}</span></div>
-                    <div style={{ paddingLeft: 16, color: G.t3 }}>Method: GET</div>
-                    <div>3. <b>Get Dictionary Value</b> for key "categories"</div>
-                    <div>4. <b>Choose from List</b> (shows your categories)</div>
-                    <div>5. <b>Get Dictionary Value</b> for key "id" from Chosen Item</div>
-                    <div>6. <b>Get contents of URL</b></div>
-                    <div style={{ paddingLeft: 16, color: G.t3 }}>URL: <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/log-sms</span></div>
-                    <div style={{ paddingLeft: 16, color: G.t3 }}>Method: POST, JSON body:</div>
-                    <div style={{ paddingLeft: 16, fontFamily: "monospace", fontSize: 11, color: G.t3 }}>sms: Shortcut Input, key: {userKey || "YOUR_KEY"}, category: (step 5 result)</div>
-                  </div>
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add the Shortcut</div>
+                  {SHORTCUT_ICLOUD_URL ? (
+                    <>
+                      <div style={{ marginBottom: 6 }}>Tap below to add the "Log Expense" shortcut to your iPhone.</div>
+                      <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
+                        style={{ display: "block", padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 14, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                        Get Shortcut {"\u2192"}
+                      </a>
+                      <div style={{ fontSize: 12, color: G.t3, marginTop: 6 }}>After adding, open it once and paste your API key when prompted.</div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 12, color: G.t3 }}>Shortcut link coming soon. Contact the admin for the shortcut file.</div>
+                  )}
                 </div>
 
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Create Automation</div>
-                  <div>Go to <b>Automation</b> tab {"\u2192"} <b>+</b> {"\u2192"} <b>Message</b></div>
-                  <div>Set <b>Sender contains</b>: your bank name (e.g. "HDFC")</div>
-                  <div>Set <b>Message contains</b>: <b>debited</b></div>
-                  <div style={{ fontSize: 12, color: G.t3, marginTop: 2 }}>This prevents triggering on OTPs, promotions, and balance alerts.</div>
-                  <div style={{ marginTop: 4 }}>Action: <b>Run Shortcut</b> {"\u2192"} select "Log Expense"</div>
-                  <div>Input: <b>Message</b> (the SMS body)</div>
-                  <div>Turn off <b>"Ask Before Running"</b></div>
+                  <div>Open <b>Shortcuts</b> app {"\u2192"} <b>Automation</b> tab {"\u2192"} <b>+</b></div>
+                  <div>Select <b>Message</b> trigger</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
+                    <div><b>Sender contains:</b> your bank name (e.g. "HDFC")</div>
+                    <div><b>Message contains:</b> debited</div>
+                  </div>
+                  <div style={{ marginTop: 6 }}>Set the action:</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 4, fontSize: 12, lineHeight: 1.7 }}>
+                    <div><b>Run Shortcut</b> {"\u2192"} select "Log Expense"</div>
+                    <div><b>Input:</b> Message (the SMS body)</div>
+                  </div>
+                  <div style={{ marginTop: 6 }}>Turn off <b>"Ask Before Running"</b></div>
                 </div>
 
                 <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
-                  Tip: For multiple banks, create one automation per bank sender. They all use the same "Log Expense" shortcut.
+                  Tip: For multiple banks, create one automation per bank. They all use the same "Log Expense" shortcut.
                 </div>
               </div>
             )}
@@ -1315,11 +1389,14 @@ td.t2 { color: #666; white-space: nowrap; }
             {editCats.map((c, i) => {
               const isDef = DEFAULT_CATEGORIES.some(d => d.id === c.id);
               return (
-              <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, opacity: c.hidden ? 0.45 : 1 }}>
-                <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 44, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
-                <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={isDef ? DEFAULT_CATEGORIES.find(d => d.id === c.id).label : "Category name"} style={{ flex: 1, padding: "10px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
-                <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 38, height: 38, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "○" : "●"}</button>
-                {!isDef && <button onClick={() => setEditCats(p => p.filter((_, j) => j !== i))} style={{ width: 38, height: 38, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 18, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title="Remove">{"\u2715"}</button>}
+              <div key={c.id}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: c.id === "investment" ? 4 : 10, opacity: c.hidden ? 0.45 : 1 }}>
+                  <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 40, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 20, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
+                  <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={isDef ? DEFAULT_CATEGORIES.find(d => d.id === c.id).label : "Category name"} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                  <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 15, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "○" : "●"}</button>
+                  {!isDef && <button onClick={() => setEditCats(p => p.filter((_, j) => j !== i))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title="Remove">{"\u2715"}</button>}
+                </div>
+                {c.id === "investment" && <div style={{ fontSize: 11, color: "#E08700", marginBottom: 10, marginLeft: 46, lineHeight: 1.3 }}>This category tracks savings & investments. Name it accordingly.</div>}
               </div>);
             })}
             {editCats.length < 8 && (
@@ -1328,6 +1405,109 @@ td.t2 { color: #666; white-space: nowrap; }
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={() => setEditCats(DEFAULT_CATEGORIES.map(c => ({ ...c })))} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Reset</button>
               <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════ BANK EDIT MODAL ══════ */}
+      {bankMod && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setBankMod(false)}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Banks & Cards</div>
+            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Add your bank accounts and credit cards. The SMS sender name helps set up automation.</div>
+            {editBanks.map((b, i) => (
+              <div key={b.id} style={{ background: G.bg2, borderRadius: 12, padding: "12px 14px", marginBottom: 10, border: `1px solid ${G.bdr}` }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+                  <input type="text" value={b.label} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} placeholder="Bank / Card name" maxLength={30} style={{ flex: 1, padding: "9px 12px", borderRadius: 8, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                  <button onClick={() => setEditBanks(p => p.filter((_, j) => j !== i))} style={{ width: 34, height: 34, borderRadius: 8, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{"\u2715"}</button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <select value={b.type} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, type: e.target.value } : x))} style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `2px solid ${G.bdr}`, fontSize: 13, color: G.t2, background: G.bg, outline: "none" }}>
+                    <option value="bank">Bank Account</option>
+                    <option value="credit_card">Credit Card</option>
+                  </select>
+                  <input type="text" value={b.sender || ""} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, sender: e.target.value } : x))} placeholder="SMS sender (e.g. HDFCBK)" maxLength={20} style={{ flex: 1, padding: "8px 10px", borderRadius: 8, border: `2px solid ${G.bdr}`, fontSize: 13, outline: "none", background: G.bg, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                  <input type="text" value={b.last4 || ""} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, last4: e.target.value.replace(/[^0-9]/g, "") } : x))} placeholder="Last 4" maxLength={4} style={{ width: 56, padding: "8px 8px", borderRadius: 8, border: `2px solid ${G.bdr}`, fontSize: 13, outline: "none", background: G.bg, color: G.t1, boxSizing: "border-box", textAlign: "center" }} />
+                </div>
+              </div>
+            ))}
+            {editBanks.length < 10 && (
+              <button onClick={() => setEditBanks(p => [...p, { id: "bnk_" + Date.now().toString(36), label: "", type: "bank", sender: "", last4: "" }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Bank / Card</button>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button onClick={() => setBankMod(false)} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+              <button onClick={saveBanks} disabled={bankSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{bankSaving ? "Saving\u2026" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════ PROFILE MODAL ══════ */}
+      {profileMod && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setProfileMod(false); setDelConfirm(false); }}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div style={{ width: 30 }} />
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt }} />
+              <button onClick={() => { setProfileMod(false); setDelConfirm(false); }} style={{ background: "none", border: "none", fontSize: 20, color: G.t3, cursor: "pointer", padding: "2px 6px", lineHeight: 1 }}>{"\u2715"}</button>
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 20 }}>Profile</div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Email</div>
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: G.bg2, fontSize: 15, color: G.t2 }}>{session?.user?.email || "—"}</div>
+            </div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Display Name</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="text" value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="Your name" maxLength={40} style={{ flex: 1, padding: "12px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                <button onClick={async () => {
+                  setProfileSaving(true);
+                  const { error } = await supabase.auth.updateUser({ data: { full_name: profileName.trim() } });
+                  setProfileSaving(false);
+                  if (error) sToast("Error saving", "err"); else sToast("Name saved");
+                }} disabled={profileSaving} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>{profileSaving ? "…" : "Save"}</button>
+              </div>
+              <div style={{ fontSize: 11, color: G.t3, marginTop: 4 }}>Used in exported reports.</div>
+            </div>
+
+            <div style={{ borderTop: `1px solid ${G.lt}`, paddingTop: 16, marginBottom: 16 }}>
+              <button onClick={async () => {
+                const email = session?.user?.email;
+                if (!email) return;
+                const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: "https://expenses.gurjarbooks.com" });
+                if (error) sToast("Error", "err"); else sToast("Reset link sent to email");
+              }} style={{ width: "100%", padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 10 }}>Change Password</button>
+
+              <button onClick={signOut} style={{ width: "100%", padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Sign Out</button>
+            </div>
+
+            <div style={{ borderTop: `1px solid ${G.lt}`, paddingTop: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#CC0000", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>Danger Zone</div>
+              {!delConfirm ? (
+                <button onClick={() => setDelConfirm(true)} style={{ width: "100%", padding: "13px", borderRadius: 12, border: "2px solid #FFCCCC", background: "#FFF5F5", color: "#CC0000", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Delete Account</button>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 13, color: "#CC0000", marginBottom: 10, lineHeight: 1.5 }}>This will permanently delete your account and all data (expenses, trips, categories). This cannot be undone.</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setDelConfirm(false)} style={{ flex: 1, padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                    <button onClick={async () => {
+                      setDeleting(true);
+                      try {
+                        const { data: { session: s } } = await supabase.auth.getSession();
+                        const res = await fetch(`${API_BASE}/api/delete-account`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_token: s?.access_token }) });
+                        const json = await res.json();
+                        if (json.ok) { sToast("Account deleted"); await supabase.auth.signOut(); }
+                        else sToast(json.error || "Error", "err");
+                      } catch { sToast("Error deleting", "err"); }
+                      setDeleting(false);
+                    }} disabled={deleting} style={{ flex: 1, padding: "13px", borderRadius: 12, border: "none", background: "#CC0000", color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>{deleting ? "Deleting…" : "Yes, Delete Everything"}</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>

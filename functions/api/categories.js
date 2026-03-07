@@ -78,7 +78,15 @@ export async function onRequestGet(context) {
     ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈ ${t.name}` })),
   ];
 
-  return new Response(JSON.stringify({ ok: true, categories }), { headers: cors });
+  // categories_map: label→id dictionary for iPhone Shortcuts "Choose from List"
+  // Shortcuts shows dictionary keys as options, returns the value of the chosen key
+  const categoriesMap = {};
+  categories.forEach(c => { categoriesMap[c.label] = c.id; });
+
+  // categories_list: flat array of labels for clean Shortcuts display
+  const categoriesList = categories.map(c => c.label);
+
+  return new Response(JSON.stringify({ ok: true, categories, categories_map: categoriesMap, categories_list: categoriesList }), { headers: cors });
 }
 
 export async function onRequestOptions() {

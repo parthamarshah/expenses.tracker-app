@@ -136,10 +136,13 @@ function AuthInner() {
           else setErr(error.message);
         }
       } else {
-        const { error } = await supabase.auth.signUp({ email: email.trim(), password });
+        const { data: signUpData, error } = await supabase.auth.signUp({ email: email.trim(), password });
         if (error) {
           if (/already registered|already exists|already.*sign/i.test(error.message)) setErr("__exists__");
           else setErr(error.message);
+        } else if (signUpData?.user?.identities?.length === 0) {
+          // Supabase returns fake success for existing emails (anti-enumeration)
+          setErr("__exists__");
         } else {
           setSignedUpEmail(email.trim());
           setInfo("__confirm__");
@@ -242,6 +245,12 @@ function AuthInner() {
             style={{ background: "none", border: "none", padding: 0, fontSize: 15, fontWeight: 700, color: G.t1, cursor: "pointer" }}>Back to Sign In</button>
         )}
       </div>
+
+      {mode === "login" && (
+        <div style={{ textAlign: "center", marginTop: 14, fontSize: 12, color: G.tm, lineHeight: 1.5 }}>
+          Forgot which email you used? Try your common addresses, or use Google sign-in if that's how you registered.
+        </div>
+      )}
     </div>
   );
 }
