@@ -9,8 +9,9 @@ const DEFAULT_CATEGORIES = [
   { id: "home",       label: "Home",     icon: "🏠" },
   { id: "investment", label: "Savings",  icon: "₹" },
 ];
-// iCloud Shortcut link — update this after sharing/re-sharing the shortcut
+// iCloud Shortcut links — update after sharing/re-sharing
 const SHORTCUT_ICLOUD_URL = "https://www.icloud.com/shortcuts/31e442fe1b6044da9f9b9545ccf9f62e";
+const CASH_SHORTCUT_URL = "https://www.icloud.com/shortcuts/c6b81f87a9a14153b2421b1216240144";
 
 const formatINR = (n) => {
   if (n == null || n === "") return "\u20B90";
@@ -1331,15 +1332,6 @@ td.t2 { color: #666; white-space: nowrap; }
               </button>
             )}
 
-            {/* Banks info */}
-            {banks.length > 0 && (
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-                {banks.map(b => (
-                  <span key={b.id} style={{ padding: "4px 10px", borderRadius: 6, background: G.bg2, border: `1px solid ${G.bdr}`, fontSize: 12, color: G.t2 }}>{b.label}{b.last4 ? ` ·${b.last4}` : ""}{b.type === "credit_card" ? " Card" : ""}</span>
-                ))}
-              </div>
-            )}
-
             {/* Platform Tabs */}
             <div style={{ display: "flex", background: G.bg2, borderRadius: 10, padding: 3, marginBottom: 16 }}>
               {[["ios", "iPhone"], ["android", "Android"]].map(([id, label]) => (
@@ -1353,22 +1345,23 @@ td.t2 { color: #666; white-space: nowrap; }
                 <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>iPhone Shortcuts Setup</div>
 
                 <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add the Shortcut</div>
-                  <div style={{ marginBottom: 6 }}>Tap below to add the "Log Expense" shortcut to your iPhone.</div>
-                  <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
-                    style={{ display: "block", padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 14, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
-                    Get Shortcut {"\u2192"}
-                  </a>
-                  <div style={{ fontSize: 12, color: G.t3, marginTop: 6 }}>After adding, open the shortcut once. It will ask for your API key — paste it from above. The key is saved and never asked again.</div>
-                </div>
-
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Fix Category Display</div>
-                  <div style={{ fontSize: 12, color: G.t3, lineHeight: 1.6 }}>If you see category IDs instead of names in the picker, edit the shortcut and ensure the "Choose from List" action uses the <b>categories_list</b> value (flat list of names), not <b>categories_map</b>.</div>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add Shortcuts</div>
+                  <div style={{ marginBottom: 6 }}>Add both shortcuts to your iPhone. Each asks for your API key on first run — paste it from above.</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                    <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                      Log Expense {"\u2192"}
+                    </a>
+                    <a href={CASH_SHORTCUT_URL} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                      Cash Expense {"\u2192"}
+                    </a>
+                  </div>
+                  <div style={{ fontSize: 12, color: G.t3, marginTop: 4 }}><b>Log Expense</b> — auto-logs bank SMS. <b>Cash Expense</b> — manually add cash spending with amount, category & note.</div>
                 </div>
 
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 3: Create Automation</div>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Create Automation</div>
                   <div>Open <b>Shortcuts</b> app {"\u2192"} <b>Automation</b> tab {"\u2192"} <b>+</b></div>
                   <div>Select <b>Message</b> trigger</div>
                   <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
