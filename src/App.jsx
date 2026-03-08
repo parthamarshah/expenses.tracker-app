@@ -188,16 +188,22 @@ export default function ExpenseTracker() {
   }, [userId]);
 
   // ── Onboarding guide for new users ─────────────────────────────────────
-  // Fires when data finishes loading for any user. For a brand-new user (0 expenses,
-  // no localStorage flag), shows the welcome guide.
-  const onboardChecked = useRef(null); // tracks which userId we already checked
+  // After data loads, if user has 0 expenses and hasn't been onboarded, show welcome guide.
+  const onboardChecked = useRef(null);
   useEffect(() => {
     if (!dbReady || !userId) return;
     if (onboardChecked.current === userId) return;
     onboardChecked.current = userId;
     try { if (localStorage.getItem(`onboarded_${userId}`)) return; } catch {}
-    if (exps.length === 0) setOnboardStep(0);
-  }, [dbReady, userId, exps.length]);
+    // Small delay to let state settle after init() batch
+    const t = setTimeout(() => {
+      setExps(prev => {
+        if (prev.length === 0) setOnboardStep(0);
+        return prev;
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [dbReady, userId]);
 
   const dismissOnboard = useCallback(() => {
     setOnboardStep(null);
