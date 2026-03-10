@@ -58,34 +58,51 @@ export async function onRequestPost(context) {
   // Auto-detect payment mode from SMS if not provided
   const detectedPayMode = payMode || detectPayMode(sms);
 
+  // Load user's categories from prefs for dynamic label→id mapping
+  const { data: prefsData } = await supabase
+    .from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle();
+
+  let userCats = [
+    { id: "personal",   label: "Personal", icon: "👤" },
+    { id: "work",       label: "Work",     icon: "💼" },
+    { id: "home",       label: "Home",     icon: "🏠" },
+    { id: "investment", label: "Savings",  icon: "₹"  },
+  ];
+  if (prefsData?.cats_json) {
+    try {
+      const parsed = JSON.parse(prefsData.cats_json);
+      if (Array.isArray(parsed) && parsed.length > 0) userCats = parsed;
+    } catch {}
+  }
+
   // Handle trip categories and fixed categories
   // Accept both IDs ("personal") and label strings ("👤 Personal", "Personal")
-  let catId = "personal";
+  let catId = userCats[0]?.id || "personal";
   let tripId = null;
 
   const catLower = category.toLowerCase().trim();
   if (catLower.startsWith("trip_")) {
     tripId = category.replace(/^trip_/i, "");
     catId = "trip";
+  } else if (catLower.startsWith("✈") || catLower.startsWith("✈️")) {
+    // Trip by name
+    const tripName = category.replace(/^✈️?\s*/u, "").trim();
+    const { data: tripRow } = await supabase.from("trips")
+      .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
+    if (tripRow) { tripId = tripRow.id; catId = "trip"; }
   } else {
-    // Map both ids and emoji-prefixed labels to internal ids
-    const catMap = {
-      "personal": "personal", "👤 personal": "personal",
-      "work": "work", "💼 work": "work",
-      "home": "home", "🏠 home": "home",
-      "savings": "investment", "₹ savings": "investment",
-      "investment": "investment", "₹ investment": "investment",
-      "card": "personal", // fallback if "card" sent as category
-    };
-    catId = catMap[catLower] || "personal";
+    // Build dynamic map: label → id and "icon label" → id for all user cats
+    const catMap = {};
+    userCats.forEach(c => {
+      catMap[c.id.toLowerCase()] = c.id;
+      catMap[c.label.toLowerCase()] = c.id;
+      catMap[`${c.icon} ${c.label}`.toLowerCase()] = c.id;
+    });
+    // Alias for savings/investment regardless of label
+    const invCat = userCats.find(c => c.id === "investment");
+    if (invCat) { catMap["savings"] = "investment"; catMap["investment"] = "investment"; }
 
-    // If it starts with a trip name (✈), look up by name
-    if (catLower.startsWith("✈") || catLower.startsWith("✈️")) {
-      const tripName = category.replace(/^✈️?\s*/u, "").trim();
-      const { data: tripRow } = await supabase.from("trips")
-        .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
-      if (tripRow) { tripId = tripRow.id; catId = "trip"; }
-    }
+    catId = catMap[catLower] || userCats[0]?.id || "personal";
   }
 
   const expId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);

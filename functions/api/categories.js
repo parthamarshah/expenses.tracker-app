@@ -1,6 +1,13 @@
 // Cloudflare Pages Function: /api/categories
-// Returns fixed categories + active trips for the user's shortcut key
+// Returns user's categories + active trips for iOS Shortcut "Choose from List"
 import { createClient } from "@supabase/supabase-js";
+
+const OLD_DEFAULT_CATEGORIES = [
+  { id: "personal",   label: "Personal", icon: "👤" },
+  { id: "work",       label: "Work",     icon: "💼" },
+  { id: "home",       label: "Home",     icon: "🏠" },
+  { id: "investment", label: "Savings",  icon: "₹"  },
+];
 
 export async function onRequestGet(context) {
   const { env, request } = context;
@@ -20,96 +27,46 @@ export async function onRequestGet(context) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
+  // Auth first (required before other queries)
   const { data: keyRow } = await supabase
-    .from("user_keys")
-    .select("user_id")
-    .eq("key_value", token)
-    .maybeSingle();
+    .from("user_keys").select("user_id").eq("key_value", token).maybeSingle();
 
   if (!keyRow) {
     return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), { status: 401, headers: cors });
   }
 
   const userId = keyRow.user_id;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
 
-  // Fixed base categories with emoji icons
-  const baseFixed = [
-    { id: "personal", label: "👤 Personal" },
-    { id: "work",     label: "💼 Work"     },
-    { id: "home",     label: "🏠 Home"     },
-    { id: "savings",  label: "₹ Savings"  },
-  ];
+  // Fetch prefs + trips + recent trip expenses all in parallel
+  const [{ data: prefsData }, { data: tripsData }, { data: expsData }] = await Promise.all([
+    supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
+    supabase.from("trips").select("id, name, pinned").eq("user_id", userId).eq("archived", false).order("created_at", { ascending: false }),
+    supabase.from("expenses").select("trip_id").eq("user_id", userId).not("trip_id", "is", null).gte("date", sevenDaysAgo),
+  ]);
 
-  // User category overrides (custom labels/icons + custom categories)
-  const { data: userCatRows } = await supabase
-    .from("user_categories")
-    .select("id, label, icon, hidden, is_savings")
-    .eq("user_id", userId)
-    .eq("hidden", false);
-
-  const userCats = userCatRows || [];
-  const sysIds = new Set(["personal", "work", "home", "investment"]);
-
-  // Build override map for system categories
-  const overrideMap = {};
-  const customCats = [];
-  userCats.forEach(c => {
-    if (sysIds.has(c.id)) overrideMap[c.id] = c;
-    else customCats.push(c);
-  });
-
-  // Build fixed categories with user overrides
-  // Note: "savings" in API maps to "investment" internally
-  const fixed = baseFixed
-    .filter(c => {
-      // If user hid the "investment" system category
-      const sysId = c.id === "savings" ? "investment" : c.id;
-      return !overrideMap[sysId]?.hidden;
-    })
-    .map(c => {
-      const sysId = c.id === "savings" ? "investment" : c.id;
-      const ov = overrideMap[sysId];
-      if (ov) return { id: c.id, label: `${ov.icon} ${ov.label}` };
-      return c;
-    });
-
-  // Add custom categories
-  const custom = customCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
-
-  // Fetch active trips
-  const { data: tripRows } = await supabase
-    .from("trips")
-    .select("id, name, pinned")
-    .eq("user_id", userId)
-    .eq("archived", false)
-    .order("created_at", { ascending: false });
-
-  const trips = tripRows || [];
-  let activeTrips = trips;
-
-  if (trips.length > 0) {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
-    const { data: recentExps } = await supabase
-      .from("expenses")
-      .select("trip_id")
-      .eq("user_id", userId)
-      .not("trip_id", "is", null)
-      .gte("date", sevenDaysAgo);
-
-    const recentTripIds = new Set((recentExps || []).map(e => e.trip_id));
-    activeTrips = trips.filter(t => t.pinned || recentTripIds.has(t.id));
+  // Resolve user's categories from user_prefs.cats_json
+  let userCats = OLD_DEFAULT_CATEGORIES;
+  if (prefsData?.cats_json) {
+    try {
+      const parsed = JSON.parse(prefsData.cats_json);
+      if (Array.isArray(parsed) && parsed.length > 0) userCats = parsed;
+    } catch {}
   }
 
+  // Build category list with "icon label" format for Shortcut display
+  const categories = userCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
+
+  // Active trips (pinned or had expense in last 7 days)
+  const trips = tripsData || [];
+  const recentTripIds = new Set((expsData || []).map(e => e.trip_id));
+  const activeTrips = trips.filter(t => t.pinned || recentTripIds.has(t.id));
   const tripCats = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
 
-  const categories = [...fixed, ...custom, ...tripCats];
+  const allCategories = [...categories, ...tripCats];
+  const labels = allCategories.map(c => c.label);
 
-  // Also return a flat labels array for iOS Shortcuts "Choose from List"
-  // — use this array directly; the shortcut will send back the full label string
-  // and log-sms.js will map it to the correct internal id.
-  const labels = categories.map(c => c.label);
-
-  return new Response(JSON.stringify({ ok: true, categories, labels }), { headers: cors });
+  return new Response(JSON.stringify({ ok: true, categories: allCategories, labels }), { headers: cors });
 }
 
 export async function onRequestOptions() {
