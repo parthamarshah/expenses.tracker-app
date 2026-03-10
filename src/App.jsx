@@ -119,21 +119,6 @@ export default function ExpenseTracker() {
   const [delConfirm, setDelConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [onboardStep, setOnboardStep] = useState(null); // null = hidden, 0-2 = step index
-  // Persisted feedback: counts how many times the user has chosen each note from a suggestion/autocomplete.
-  // Stored in localStorage so it accumulates across sessions without needing a DB migration.
-  const [noteFeedback, setNoteFeedback] = useState(() => {
-    try { return JSON.parse(localStorage.getItem("note_feedback") || "{}"); }
-    catch { return {}; }
-  });
-  // Call whenever the user explicitly picks a note from either suggestion chip or autocomplete list.
-  const trackNoteChosen = useCallback((n) => {
-    if (!n) return;
-    setNoteFeedback(prev => {
-      const updated = { ...prev, [n]: { count: (prev[n]?.count || 0) + 1, lastUsed: Date.now() } };
-      try { localStorage.setItem("note_feedback", JSON.stringify(updated)); } catch {}
-      return updated;
-    });
-  }, []);
 
   const aRef = useRef(null);
   const tRef = useRef({});
@@ -272,98 +257,6 @@ export default function ExpenseTracker() {
     return b ? b.label : "Bank";
   }, [banks]);
 
-  const quickAmts = useMemo(() => {
-    const cutoff = Date.now() - 365 * 864e5;
-    const rec = exps.filter(e => new Date(e.date).getTime() > cutoff);
-    const freq = {};
-    rec.forEach(e => { freq[e.amount] = (freq[e.amount] || 0) + 1; });
-    const s = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([a]) => Number(a));
-    return s.length >= 3 ? s : [100, 200, 500, 1000, 2000];
-  }, [exps]);
-
-  // Smart context suggestions — shown when note is EMPTY and amount is filled.
-  // Scores each candidate note by multiple signals with recency decay; shows nothing
-  // rather than a low-confidence guess (quality gate on final score).
-  const noteSuggestions = useMemo(() => {
-    const amtNum = Number(amt);
-    if (!amtNum || amtNum <= 0) return [];
-    const now = Date.now();
-    const cutoff = now - 90 * 864e5;
-    const recent = exps.filter(e => new Date(e.date).getTime() > cutoff && e.note && e.note.trim());
-    if (recent.length === 0) return [];
-    const nowDate = new Date();
-    const nowDow = nowDate.getDay();
-    // Time-of-day bucket: 0=morning(5-11), 1=afternoon(12-17), 2=evening(18+), 3=night(<5)
-    const todBucket = (h) => h >= 5 && h < 12 ? 0 : h >= 12 && h < 18 ? 1 : h >= 18 ? 2 : 3;
-    const nowTod = todBucket(nowDate.getHours());
-    const scores = {}, freqs = {};
-    recent.forEach(e => {
-      const n = e.note.trim();
-      const eDate = new Date(e.date);
-      const sameCat = e.category === cat || (cat.startsWith("trip_") && e.tripId === cat.replace("trip_", ""));
-      const amtRatio = e.amount > 0 ? Math.abs(e.amount - amtNum) / Math.max(amtNum, e.amount) : 1;
-      const simAmt = amtRatio <= 0.20;
-      const verySimAmt = amtRatio <= 0.05;
-      const samePay = e.payMode === pay;
-      // Require at least 2 hard signals to suppress noise entirely
-      if ((sameCat ? 1 : 0) + (simAmt ? 1 : 0) + (samePay ? 1 : 0) < 2) return;
-      // Exponential recency decay: half-life ~21 days (recent entries count much more)
-      const recency = Math.exp(-(now - eDate.getTime()) / (21 * 864e5));
-      // Context score: category is the strongest signal, then amount precision, then mode
-      const ctx = (sameCat ? 4 : 0)
-        + (verySimAmt ? 3 : simAmt ? 1.5 : 0)
-        + (samePay ? 1.5 : 0)
-        + (eDate.getDay() === nowDow ? 0.7 : 0)          // weekly habit bonus
-        + (todBucket(eDate.getHours()) === nowTod ? 0.3 : 0); // time-of-day bonus
-      scores[n] = (scores[n] || 0) + ctx * recency;
-      freqs[n] = (freqs[n] || 0) + 1;
-    });
-    // Final score: context × log(frequency) × user-choice feedback boost.
-    // Quality gate (≥1.5) ensures we show nothing rather than a weak suggestion.
-    return Object.entries(scores)
-      .map(([n, sc]) => {
-        const fb = noteFeedback[n];
-        // Each past user choice adds a logarithmic boost (max ~+60% at 10 picks)
-        const fbBoost = fb ? 1 + 0.4 * Math.log1p(fb.count) : 1;
-        return { n, score: sc * Math.log1p(freqs[n]) * fbBoost };
-      })
-      .filter(({ score }) => score >= 1.5)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 3)
-      .map(({ n }) => n);
-  }, [exps, amt, cat, pay, noteFeedback]);
-
-  // Context-aware typing autocomplete — activates after 20 entries (enough history to be
-  // meaningful), scores prefix-matching completions by recency + context signals so the
-  // most relevant completion rises to the top. Trivial completions (<2 chars remaining)
-  // are suppressed. Max 3 items so it never crowds the screen.
-  const noteAutocomplete = useMemo(() => {
-    if (exps.length < 20) return [];
-    if (!note || note.length < 2) return [];
-    const q = note.toLowerCase();
-    const amtNum = Number(amt);
-    const now = Date.now();
-    const scores = {};
-    exps.forEach(e => {
-      const n = (e.note || "").trim();
-      if (!n || !n.toLowerCase().startsWith(q) || n.toLowerCase() === q) return;
-      if (n.slice(note.length).length < 2) return; // completion too trivial
-      const recency = Math.exp(-(now - new Date(e.date).getTime()) / (30 * 864e5));
-      const sameCat = e.category === cat || (cat.startsWith("trip_") && e.tripId === cat.replace("trip_", ""));
-      const amtRatio = amtNum > 0 && e.amount > 0 ? Math.abs(e.amount - amtNum) / Math.max(amtNum, e.amount) : 1;
-      const ctxBonus = (sameCat ? 2 : 0) + (amtRatio <= 0.25 ? 1 : 0) + (e.payMode === pay ? 0.5 : 0);
-      scores[n] = (scores[n] || 0) + (1 + ctxBonus) * recency;
-    });
-    return Object.entries(scores)
-      .map(([n, sc]) => {
-        const fb = noteFeedback[n];
-        const fbBoost = fb ? 1 + 0.4 * Math.log1p(fb.count) : 1;
-        return [n, sc * fbBoost];
-      })
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3)
-      .map(([n]) => n);
-  }, [exps, note, amt, cat, pay, noteFeedback]);
 
   const toastTimer = useRef(null);
   const sToast = useCallback((m, t = "ok") => {
@@ -867,21 +760,18 @@ td.t2 { color: #666; white-space: nowrap; }
               {amt !== "" && <button onClick={() => { hap(); setAmt(""); aRef.current?.focus(); }} tabIndex={-1} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: G.tm, padding: "0 4px", lineHeight: 1 }}>{"\u2715"}</button>}
             </div>
 
-            <div style={{ display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap", margin: "0 0 8px" }}>
-              {quickAmts.map(a => (
-                <button key={a} onClick={() => { hap(); setAmt(a.toString()); }} style={{ padding: "7px 15px", borderRadius: 18, border: "none", cursor: "pointer", fontSize: 15, fontWeight: 600, background: amt === a.toString() ? G.bk : G.bg2, color: amt === a.toString() ? G.wh : G.t2 }}>
-                  {a >= 1000 ? `${a / 1000}k` : a}
-                </button>
-              ))}
-            </div>
 
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, textTransform: "uppercase", letterSpacing: 1.5 }}>Category</div>
                 <button onClick={openCatMod} title="Customise categories" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: G.tm, padding: "2px 4px", lineHeight: 1, fontWeight: 600 }}>✎ edit</button>
               </div>
-              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                {addCats.map(c => B(cat === c.id, c.label, () => { hap(); setCat(c.id); }))}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 5 }}>
+                {addCats.map(c => (
+                  <button key={c.id} onClick={() => { hap(); setCat(c.id); }} style={{ padding: "8px 4px", borderRadius: 12, cursor: "pointer", fontSize: 12, fontWeight: cat === c.id ? 700 : 500, border: `2px solid ${cat === c.id ? G.bk : G.bdr}`, background: cat === c.id ? G.bk : G.bg, color: cat === c.id ? G.wh : G.t2, textAlign: "center", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {c.icon ? `${c.icon} ${c.label}` : c.label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -896,28 +786,8 @@ td.t2 { color: #666; white-space: nowrap; }
             </div>
 
             <div style={{ position: "relative" }}>
-              <div style={{ position: "relative" }}>
-                <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); if (e.key === "Tab" && noteAutocomplete.length > 0) { e.preventDefault(); hap(); trackNoteChosen(noteAutocomplete[0]); setNote(noteAutocomplete[0]); } }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
-                {note && <button onClick={() => { hap(); setNote(""); }} tabIndex={-1} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, color: G.tm, padding: "0 2px", lineHeight: 1, zIndex: 1 }}>{"\u2715"}</button>}
-              </div>
-              {/* Autocomplete dropdown: shows while typing (after 3 entries) */}
-              {noteAutocomplete.length > 0 && (
-                <div style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 3, background: G.bg, border: `1.5px solid ${G.bdr}`, borderRadius: 12, zIndex: 50, overflow: "hidden", boxShadow: "0 4px 16px rgba(0,0,0,.10)" }}>
-                  {noteAutocomplete.map((s, i) => (
-                    <button key={s} onPointerDown={e => { e.preventDefault(); hap(); trackNoteChosen(s); setNote(s); }} style={{ display: "block", width: "100%", padding: "11px 14px", border: "none", borderTop: i > 0 ? `1px solid ${G.lt}` : "none", background: "transparent", textAlign: "left", fontSize: 15, color: G.t1, cursor: "pointer", fontWeight: i === 0 ? 600 : 400 }}>
-                      <span style={{ color: G.t3 }}>{note}</span>{s.slice(note.length)}
-                    </button>
-                  ))}
-                </div>
-              )}
-              {/* Context suggestions: shows when note is empty & amount is filled */}
-              {noteSuggestions.length > 0 && !note && (
-                <div style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 6, paddingBottom: 2, WebkitOverflowScrolling: "touch" }}>
-                  {noteSuggestions.map(s => (
-                    <button key={s} onClick={() => { hap(); trackNoteChosen(s); setNote(s); }} style={{ padding: "5px 12px", borderRadius: 16, border: `1.5px solid ${G.bdr}`, background: G.bg2, color: G.t2, fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", cursor: "pointer", flexShrink: 0 }}>{s}</button>
-                  ))}
-                </div>
-              )}
+              <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
+              {note && <button onClick={() => { hap(); setNote(""); }} tabIndex={-1} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, color: G.tm, padding: "0 2px", lineHeight: 1, zIndex: 1 }}>{"\u2715"}</button>}
             </div>
 
             <div>

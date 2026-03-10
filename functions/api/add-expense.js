@@ -47,30 +47,45 @@ export async function onRequestPost(context) {
     return new Response(JSON.stringify({ ok: false, error: "Invalid amount" }), { status: 400, headers: cors });
   }
 
-  let catId = "personal";
-  let tripId = null;
+  // Load user's categories for dynamic label→id resolution
+  const { data: prefsData } = await supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle();
+  let userCats = [
+    { id: "personal", label: "Personal", icon: "👤" },
+    { id: "work",     label: "Work",     icon: "💼" },
+    { id: "home",     label: "Home",     icon: "🏠" },
+    { id: "investment", label: "Savings", icon: "₹" },
+  ];
+  if (prefsData?.cats_json) {
+    try {
+      const parsed = JSON.parse(prefsData.cats_json);
+      if (Array.isArray(parsed) && parsed.length > 0) userCats = parsed;
+    } catch {}
+  }
 
-  if (category.startsWith("trip_")) {
-    tripId = category.replace("trip_", "");
+  let catId = userCats[0]?.id || "personal";
+  let tripId = null;
+  const catLower = category.toLowerCase().trim();
+
+  if (catLower.startsWith("trip_")) {
+    tripId = category.replace(/^trip_/i, "");
     catId = "trip";
-  } else if (category.startsWith("custom_") || ["personal", "work", "home", "investment"].includes(category)) {
-    catId = category;
+  } else if (catLower.startsWith("✈") || catLower.startsWith("✈️")) {
+    // Trip by display name (e.g. "✈️ Goa Trip")
+    const tripName = category.replace(/^✈️?\s*/u, "").trim();
+    const { data: tripRow } = await supabase.from("trips")
+      .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
+    if (tripRow) { tripId = tripRow.id; catId = "trip"; }
   } else {
-    // Try resolving by label (e.g., "Personal" → "personal", "Savings" → "investment")
-    const labelMap = { personal: "personal", work: "work", home: "home", savings: "investment", investment: "investment" };
-    if (labelMap[category]) {
-      catId = labelMap[category];
-    } else {
-      // Check user's custom categories by label match
-      const { data: prefsRow } = await supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle();
-      if (prefsRow?.cats_json) {
-        try {
-          const cats = JSON.parse(prefsRow.cats_json);
-          const match = cats.find(c => c.label && c.label.toLowerCase() === category);
-          if (match) catId = match.id;
-        } catch {}
-      }
-    }
+    // Build dynamic map: id → id, label → id, "icon label" → id
+    const catMap = {};
+    userCats.forEach(c => {
+      catMap[c.id.toLowerCase()] = c.id;
+      catMap[c.label.toLowerCase()] = c.id;
+      if (c.icon) catMap[`${c.icon} ${c.label}`.toLowerCase()] = c.id;
+    });
+    catMap["savings"] = "investment";
+    catMap["investment"] = "investment";
+    catId = catMap[catLower] || userCats[0]?.id || "personal";
   }
 
   const expId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
