@@ -3,12 +3,25 @@ import { supabase, dbToExp, dbToTrip, expToDb, tripToDb } from "./supabase";
 import { useAuth } from "./AuthContext";
 import Auth, { PasswordReset } from "./Auth";
 
-const DEFAULT_CATEGORIES = [
+// Categories for users who signed up before the new defaults
+const OLD_DEFAULT_CATEGORIES = [
   { id: "personal",   label: "Personal", icon: "👤" },
   { id: "work",       label: "Work",     icon: "💼" },
   { id: "home",       label: "Home",     icon: "🏠" },
   { id: "investment", label: "Savings",  icon: "₹" },
 ];
+// Categories for brand-new users
+const NEW_DEFAULT_CATEGORIES = [
+  { id: "groceries",  label: "Groceries",     icon: "🛒" },
+  { id: "food",       label: "Food",          icon: "🍔" },
+  { id: "travel",     label: "Travel",        icon: "✈️" },
+  { id: "entertain",  label: "Entertainment", icon: "🎬" },
+  { id: "personal",   label: "Personal Care", icon: "💄" },
+  { id: "others",     label: "Others",        icon: "📦" },
+  { id: "investment", label: "Savings",       icon: "₹"  },
+];
+// Alias used by the cat modal Reset button
+const DEFAULT_CATEGORIES = OLD_DEFAULT_CATEGORIES;
 // iCloud Shortcut links — update after sharing/re-sharing
 const SHORTCUT_ICLOUD_URL = "https://www.icloud.com/shortcuts/31e442fe1b6044da9f9b9545ccf9f62e";
 const CASH_SHORTCUT_URL = "https://www.icloud.com/shortcuts/c6b81f87a9a14153b2421b1216240144";
@@ -88,10 +101,13 @@ export default function ExpenseTracker() {
   const [keyMod,     setKeyMod]     = useState(false);
   const [userKey,    setUserKey]    = useState(null);
   const [keyLoading, setKeyLoading] = useState(false);
-  const [cats,       setCats]       = useState(DEFAULT_CATEGORIES);
+  const [cats,       setCats]       = useState(OLD_DEFAULT_CATEGORIES);
   const [catMod,     setCatMod]     = useState(false);
-  const [editCats,   setEditCats]   = useState(DEFAULT_CATEGORIES);
+  const [editCats,   setEditCats]   = useState(OLD_DEFAULT_CATEGORIES);
   const [catSaving,  setCatSaving]  = useState(false);
+  const [newCatIcon, setNewCatIcon] = useState("");
+  const [newCatLabel,setNewCatLabel]= useState("");
+  const [dragIdx,    setDragIdx]    = useState(null); // index of cat being moved (tap-to-reorder)
   const [setupTab,   setSetupTab]   = useState("ios"); // "ios" | "android"
   const [banks,      setBanks]      = useState([]);
   const [bankMod,    setBankMod]    = useState(false);
@@ -140,20 +156,29 @@ export default function ExpenseTracker() {
       if (prefsRow?.cats_json) {
         try {
           const saved = JSON.parse(prefsRow.cats_json);
-          // merge: start with saved array, ensure all 4 defaults exist
-          const defIds = DEFAULT_CATEGORIES.map(d => d.id);
-          const merged = [];
-          // First add defaults in order, applying any saved overrides
-          DEFAULT_CATEGORIES.forEach(def => {
-            const s = saved.find(x => x.id === def.id);
-            merged.push(s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def);
-          });
-          // Then add custom categories (non-default IDs)
-          saved.filter(s => !defIds.includes(s.id)).forEach(s => {
-            merged.push({ id: s.id, label: s.label || "Custom", icon: s.icon || "📌", hidden: !!s.hidden });
-          });
-          setCats(merged);
+          if (Array.isArray(saved) && saved.length > 0) {
+            // Merge: preserve user's saved cats (with any custom additions), fill in missing defaults
+            const defIds = DEFAULT_CATEGORIES.map(d => d.id);
+            const merged = [];
+            DEFAULT_CATEGORIES.forEach(def => {
+              const s = saved.find(x => x.id === def.id);
+              merged.push(s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def);
+            });
+            // Add custom categories (non-default IDs)
+            saved.filter(s => !defIds.includes(s.id)).forEach(s => {
+              merged.push({ id: s.id, label: s.label || "Custom", icon: s.icon || "📌", hidden: !!s.hidden });
+            });
+            setCats(merged);
+          }
         } catch {}
+      } else {
+        // No prefs yet — seed new users with modern category set
+        const isNewUser = (expRows || []).length === 0;
+        if (isNewUser) {
+          setCats(NEW_DEFAULT_CATEGORIES);
+          supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(NEW_DEFAULT_CATEGORIES) }).then(() => {});
+        }
+        // else: existing user with no customisation → keep OLD_DEFAULT_CATEGORIES (initial state)
       }
       if (prefsRow?.banks_json) {
         try {
@@ -621,6 +646,7 @@ td.t2 { color: #666; white-space: nowrap; }
   // ── Custom categories ─────────────────────────────────────────────────────
   const openCatMod = useCallback(() => {
     setEditCats(cats.map(c => ({ ...c })));
+    setNewCatIcon(""); setNewCatLabel(""); setDragIdx(null);
     setCatMod(true);
   }, [cats]);
 
@@ -636,6 +662,27 @@ td.t2 { color: #666; white-space: nowrap; }
     setCatSaving(false);
     if (error) sToast("Sync error", "err");
   }, [editCats, userId, sToast]);
+
+  const addNewCat = useCallback(() => {
+    if (!newCatLabel.trim()) return;
+    const id = "custom_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    setEditCats(p => [...p, { id, label: newCatLabel.trim(), icon: newCatIcon.trim() || "📦", hidden: false }]);
+    setNewCatLabel(""); setNewCatIcon("");
+  }, [newCatLabel, newCatIcon]);
+
+  const moveCat = useCallback((fromIdx, toIdx) => {
+    setEditCats(p => {
+      const a = [...p];
+      const [item] = a.splice(fromIdx, 1);
+      a.splice(toIdx, 0, item);
+      return a;
+    });
+    setDragIdx(null);
+  }, []);
+
+  const switchToNewDefaults = useCallback(() => {
+    setEditCats(NEW_DEFAULT_CATEGORIES.map(c => ({ ...c })));
+  }, []);
 
   // ── Banks & Cards ───────────────────────────────────────────────────────
   const openBankMod = useCallback(() => {

@@ -136,18 +136,51 @@ export async function onRequestPost(context) {
   // Step 6: Parse merchant/note (bank-aware)
   const note = parseSmsNote(sms, bank);
 
-  // Handle trip categories (e.g. "trip_abc123") and fixed categories
-  let catId = "personal";
+  // Load user's categories from prefs for dynamic label→id mapping
+  const { data: prefsData } = await supabase
+    .from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle();
+
+  let userCats = [
+    { id: "personal",   label: "Personal", icon: "👤" },
+    { id: "work",       label: "Work",     icon: "💼" },
+    { id: "home",       label: "Home",     icon: "🏠" },
+    { id: "investment", label: "Savings",  icon: "₹"  },
+  ];
+  if (prefsData?.cats_json) {
+    try {
+      const parsed = JSON.parse(prefsData.cats_json);
+      if (Array.isArray(parsed) && parsed.length > 0) userCats = parsed;
+    } catch {}
+  }
+
+  // Handle trip categories and fixed categories
+  // Accept IDs ("personal"), label strings ("Groceries"), or emoji+label ("🛒 Groceries")
+  let catId = userCats[0]?.id || "personal";
   let tripId = null;
 
-  if (category.startsWith("trip_")) {
-    tripId = category.replace("trip_", "");
+  const catLower = category.toLowerCase().trim();
+  if (catLower.startsWith("trip_")) {
+    tripId = category.replace(/^trip_/i, "");
     catId = "trip";
-  } else if (category.startsWith("custom_") || ["personal", "work", "home", "investment"].includes(category)) {
-    catId = category;
+  } else if (catLower.startsWith("✈") || catLower.startsWith("✈️")) {
+    // Trip by display name (e.g. "✈️ Goa Trip")
+    const tripName = category.replace(/^✈️?\s*/u, "").trim();
+    const { data: tripRow } = await supabase.from("trips")
+      .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
+    if (tripRow) { tripId = tripRow.id; catId = "trip"; }
   } else {
-    const catMap = { savings: "investment" };
-    catId = catMap[category] || "personal";
+    // Build dynamic map: id → id, label → id, and "icon label" → id for all user cats
+    const catMap = {};
+    userCats.forEach(c => {
+      catMap[c.id.toLowerCase()] = c.id;
+      catMap[c.label.toLowerCase()] = c.id;
+      if (c.icon) catMap[`${c.icon} ${c.label}`.toLowerCase()] = c.id;
+    });
+    // Always allow savings/investment alias
+    const invCat = userCats.find(c => c.id === "investment");
+    if (invCat) { catMap["savings"] = "investment"; catMap["investment"] = "investment"; }
+
+    catId = catMap[catLower] || userCats[0]?.id || "personal";
   }
 
   const expId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);

@@ -1,6 +1,13 @@
 // Cloudflare Pages Function: /api/categories
-// Returns fixed categories + active trips for the user's shortcut key
+// Returns user's categories + active trips for iOS Shortcut "Choose from List"
 import { createClient } from "@supabase/supabase-js";
+
+const OLD_DEFAULT_CATEGORIES = [
+  { id: "personal",   label: "Personal", icon: "👤" },
+  { id: "work",       label: "Work",     icon: "💼" },
+  { id: "home",       label: "Home",     icon: "🏠" },
+  { id: "investment", label: "Savings",  icon: "₹"  },
+];
 
 export async function onRequestGet(context) {
   const { env, request } = context;
@@ -20,79 +27,65 @@ export async function onRequestGet(context) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Look up user from key
+  // Auth first (required before other queries)
   const { data: keyRow } = await supabase
-    .from("user_keys")
-    .select("user_id")
-    .eq("key_value", token)
-    .maybeSingle();
+    .from("user_keys").select("user_id").eq("key_value", token).maybeSingle();
 
   if (!keyRow) {
     return new Response(JSON.stringify({ ok: false, error: "Unauthorized" }), { status: 401, headers: cors });
   }
 
   const userId = keyRow.user_id;
+  const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
 
-  // Default categories (fallback if user has no custom prefs)
-  const DEFAULT_CATS = [
-    { id: "personal", label: "Personal" },
-    { id: "work", label: "Work" },
-    { id: "home", label: "Home" },
-    { id: "investment", label: "Savings" },
-  ];
-
-  // Load user's custom categories from user_prefs
-  const [{ data: prefsRow }, { data: tripRows }] = await Promise.all([
+  // Fetch prefs + trips + recent trip expenses all in parallel
+  const [{ data: prefsData }, { data: tripsData }, { data: expsData }] = await Promise.all([
     supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
     supabase.from("trips").select("id, name, pinned").eq("user_id", userId).eq("archived", false).order("created_at", { ascending: false }),
+    supabase.from("expenses").select("trip_id").eq("user_id", userId).not("trip_id", "is", null).gte("date", sevenDaysAgo),
   ]);
 
-  let userCats = DEFAULT_CATS;
-  if (prefsRow?.cats_json) {
+  // Resolve user's categories from user_prefs.cats_json
+  let userCats = OLD_DEFAULT_CATEGORIES;
+  if (prefsData?.cats_json) {
     try {
-      const saved = JSON.parse(prefsRow.cats_json);
-      const visible = saved.filter(c => !c.hidden);
-      if (visible.length > 0) userCats = visible.map(c => ({ id: c.id, label: c.label }));
+      const parsed = JSON.parse(prefsData.cats_json);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Filter out hidden categories
+        const visible = parsed.filter(c => !c.hidden);
+        if (visible.length > 0) userCats = visible;
+      }
     } catch {}
   }
 
-  // Determine which trips are "active" — had an expense in last 7 days, or pinned
-  const trips = tripRows || [];
-  let activeTrips = trips;
+  // Build category list with "icon label" format for iOS Shortcut display
+  const categories = userCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
 
-  if (trips.length > 0) {
-    const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
-    const { data: recentExps } = await supabase
-      .from("expenses")
-      .select("trip_id")
-      .eq("user_id", userId)
-      .not("trip_id", "is", null)
-      .gte("date", sevenDaysAgo);
+  // Active trips (pinned or had expense in last 7 days)
+  const trips = tripsData || [];
+  const recentTripIds = new Set((expsData || []).map(e => e.trip_id));
+  const activeTrips = trips.filter(t => t.pinned || recentTripIds.has(t.id));
+  const tripCats = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
 
-    const recentTripIds = new Set((recentExps || []).map(e => e.trip_id));
-    activeTrips = trips.filter(t => t.pinned || recentTripIds.has(t.id));
-  }
+  const allCategories = [...categories, ...tripCats];
 
-  const categories = [
-    ...userCats,
-    ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈ ${t.name}` })),
-  ];
+  // labels: flat array of display strings for iOS "Choose from List"
+  const labels = allCategories.map(c => c.label);
 
-  // categories_map: label→id dictionary for iPhone Shortcuts "Choose from List"
-  // Shortcuts shows dictionary keys as options, returns the value of the chosen key
+  // categories_map: label→id dictionary (useful for Android Shortcuts / mapping back)
   const categoriesMap = {};
-  categories.forEach(c => { categoriesMap[c.label] = c.id; });
+  allCategories.forEach(c => { categoriesMap[c.label] = c.id; });
 
-  // categories_list: flat array of labels for clean Shortcuts display
-  const categoriesList = categories.map(c => c.label);
+  // categories_list: alias for labels (backward compat with Android shortcut)
+  const categoriesList = labels;
 
-  return new Response(JSON.stringify({ ok: true, categories, categories_map: categoriesMap, categories_list: categoriesList }), { headers: cors });
+  return new Response(JSON.stringify({ ok: true, categories: allCategories, labels, categories_list: categoriesList, categories_map: categoriesMap }), { headers: cors });
 }
 
 export async function onRequestOptions() {
   return new Response(null, {
     headers: {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     },
