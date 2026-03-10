@@ -50,11 +50,15 @@ export async function onRequestGet(context) {
   if (prefsData?.cats_json) {
     try {
       const parsed = JSON.parse(prefsData.cats_json);
-      if (Array.isArray(parsed) && parsed.length > 0) userCats = parsed;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        // Filter out hidden categories
+        const visible = parsed.filter(c => !c.hidden);
+        if (visible.length > 0) userCats = visible;
+      }
     } catch {}
   }
 
-  // Build category list with "icon label" format for Shortcut display
+  // Build category list with "icon label" format for iOS Shortcut display
   const categories = userCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
 
   // Active trips (pinned or had expense in last 7 days)
@@ -64,9 +68,18 @@ export async function onRequestGet(context) {
   const tripCats = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
 
   const allCategories = [...categories, ...tripCats];
+
+  // labels: flat array of display strings for iOS "Choose from List"
   const labels = allCategories.map(c => c.label);
 
-  return new Response(JSON.stringify({ ok: true, categories: allCategories, labels }), { headers: cors });
+  // categories_map: label→id dictionary (useful for Android Shortcuts / mapping back)
+  const categoriesMap = {};
+  allCategories.forEach(c => { categoriesMap[c.label] = c.id; });
+
+  // categories_list: alias for labels (backward compat with Android shortcut)
+  const categoriesList = labels;
+
+  return new Response(JSON.stringify({ ok: true, categories: allCategories, labels, categories_list: categoriesList, categories_map: categoriesMap }), { headers: cors });
 }
 
 export async function onRequestOptions() {

@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { supabase, dbToExp, dbToTrip, expToDb, tripToDb } from "./supabase";
 import { useAuth } from "./AuthContext";
 import Auth, { PasswordReset } from "./Auth";
-import * as XLSX from "xlsx";
 
 // Categories for users who signed up before the new defaults
 const OLD_DEFAULT_CATEGORIES = [
@@ -11,22 +10,21 @@ const OLD_DEFAULT_CATEGORIES = [
   { id: "home",       label: "Home",     icon: "🏠" },
   { id: "investment", label: "Savings",  icon: "₹" },
 ];
-// Categories for new users
+// Categories for brand-new users
 const NEW_DEFAULT_CATEGORIES = [
-  { id: "groceries",  label: "Groceries",         icon: "🛒" },
-  { id: "food",       label: "Food",              icon: "🍔" },
-  { id: "travel",     label: "Travel",            icon: "✈️" },
-  { id: "entertain",  label: "Entertainment",     icon: "🎬" },
-  { id: "personal",   label: "Personal Care",     icon: "💄" },
-  { id: "others",     label: "Others",            icon: "📦" },
-  { id: "investment", label: "Savings",           icon: "₹"  },
+  { id: "groceries",  label: "Groceries",     icon: "🛒" },
+  { id: "food",       label: "Food",          icon: "🍔" },
+  { id: "travel",     label: "Travel",        icon: "✈️" },
+  { id: "entertain",  label: "Entertainment", icon: "🎬" },
+  { id: "personal",   label: "Personal Care", icon: "💄" },
+  { id: "others",     label: "Others",        icon: "📦" },
+  { id: "investment", label: "Savings",       icon: "₹"  },
 ];
-const PAY = [
-  { id: "cash", label: "Cash" },
-  { id: "bank", label: "Bank" },
-  { id: "card", label: "Card" },
-  { id: "upi",  label: "UPI"  },
-];
+// Alias used by the cat modal Reset button
+const DEFAULT_CATEGORIES = OLD_DEFAULT_CATEGORIES;
+// iCloud Shortcut links — update after sharing/re-sharing
+const SHORTCUT_ICLOUD_URL = "https://www.icloud.com/shortcuts/31e442fe1b6044da9f9b9545ccf9f62e";
+const CASH_SHORTCUT_URL = "https://www.icloud.com/shortcuts/c6b81f87a9a14153b2421b1216240144";
 
 const formatINR = (n) => {
   if (n == null || n === "") return "\u20B90";
@@ -71,11 +69,11 @@ export default function ExpenseTracker() {
   const [exps,      setExps]      = useState([]);
   const [trips,     setTrips]     = useState([]);
   const [dbReady,   setDbReady]   = useState(false);
-  const [view,      setView]      = useState("add");
+  const [view,      setView]      = useState("list");
   const [amt,       setAmt]       = useState("");
   const [note,      setNote]      = useState("");
   const [cat,       setCat]       = useState("personal");
-  const [pay,       setPay]       = useState("bank");
+  const [pay,       setPay]       = useState("cash");
   const [editId,    setEditId]    = useState(null);
   const [toast,     setToast]     = useState(null);
   const [sq,        setSq]        = useState("");
@@ -95,6 +93,10 @@ export default function ExpenseTracker() {
   const [insPeriod,   setInsPeriod]   = useState("month");
   const [insMonth,    setInsMonth]    = useState(() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; });
   const [insYear,     setInsYear]     = useState(() => new Date().getFullYear());
+  // History period: "all" | "month" | "year"
+  const [histPeriod,  setHistPeriod]  = useState("all");
+  const [histMonth,   setHistMonth]   = useState(() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; });
+  const [histYear,    setHistYear]    = useState(() => new Date().getFullYear());
   const [editDate,  setEditDate]  = useState("");
   const [keyMod,     setKeyMod]     = useState(false);
   const [userKey,    setUserKey]    = useState(null);
@@ -102,17 +104,36 @@ export default function ExpenseTracker() {
   const [cats,       setCats]       = useState(OLD_DEFAULT_CATEGORIES);
   const [catMod,     setCatMod]     = useState(false);
   const [editCats,   setEditCats]   = useState(OLD_DEFAULT_CATEGORIES);
+  const [catSaving,  setCatSaving]  = useState(false);
   const [newCatIcon, setNewCatIcon] = useState("");
   const [newCatLabel,setNewCatLabel]= useState("");
-  const [dragIdx,    setDragIdx]    = useState(null); // index of cat being moved
-  const [catSaving,  setCatSaving]  = useState(false);
-  const [fDateFrom,   setFDateFrom]   = useState(null);
-  const [fDateTo,     setFDateTo]     = useState(null);
-  const [dispName,    setDispName]    = useState("");
-  const [savingName,  setSavingName]  = useState(false);
-  const [profPwSent,  setProfPwSent]  = useState(false);
-  const [confirmDel,  setConfirmDel]  = useState(false);
-  const [deletingAcc, setDeletingAcc] = useState(false);
+  const [dragIdx,    setDragIdx]    = useState(null); // index of cat being moved (tap-to-reorder)
+  const [setupTab,   setSetupTab]   = useState("ios"); // "ios" | "android"
+  const [banks,      setBanks]      = useState([]);
+  const [bankMod,    setBankMod]    = useState(false);
+  const [editBanks,  setEditBanks]  = useState([]);
+  const [bankSaving, setBankSaving] = useState(false);
+  const [profileMod, setProfileMod] = useState(false);
+  const [profileName, setProfileName] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [delConfirm, setDelConfirm] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [onboardStep, setOnboardStep] = useState(null); // null = hidden, 0-2 = step index
+  // Persisted feedback: counts how many times the user has chosen each note from a suggestion/autocomplete.
+  // Stored in localStorage so it accumulates across sessions without needing a DB migration.
+  const [noteFeedback, setNoteFeedback] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("note_feedback") || "{}"); }
+    catch { return {}; }
+  });
+  // Call whenever the user explicitly picks a note from either suggestion chip or autocomplete list.
+  const trackNoteChosen = useCallback((n) => {
+    if (!n) return;
+    setNoteFeedback(prev => {
+      const updated = { ...prev, [n]: { count: (prev[n]?.count || 0) + 1, lastUsed: Date.now() } };
+      try { localStorage.setItem("note_feedback", JSON.stringify(updated)); } catch {}
+      return updated;
+    });
+  }, []);
 
   const aRef = useRef(null);
   const tRef = useRef({});
@@ -128,27 +149,50 @@ export default function ExpenseTracker() {
       const [{ data: expRows }, { data: tripRows }, { data: prefsRow }] = await Promise.all([
         supabase.from("expenses").select("*").eq("user_id", userId).order("date", { ascending: false }),
         supabase.from("trips").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
-        supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
+        supabase.from("user_prefs").select("cats_json, banks_json").eq("user_id", userId).maybeSingle(),
       ]);
       setExps((expRows  || []).map(dbToExp));
       setTrips((tripRows || []).map(dbToTrip));
       if (prefsRow?.cats_json) {
         try {
           const saved = JSON.parse(prefsRow.cats_json);
-          // New format: full array of {id, label, icon} objects
-          if (Array.isArray(saved) && saved.length > 0) setCats(saved);
+          if (Array.isArray(saved) && saved.length > 0) {
+            // Merge: preserve user's saved cats (with any custom additions), fill in missing defaults
+            const defIds = DEFAULT_CATEGORIES.map(d => d.id);
+            const merged = [];
+            DEFAULT_CATEGORIES.forEach(def => {
+              const s = saved.find(x => x.id === def.id);
+              merged.push(s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def);
+            });
+            // Add custom categories (non-default IDs)
+            saved.filter(s => !defIds.includes(s.id)).forEach(s => {
+              merged.push({ id: s.id, label: s.label || "Custom", icon: s.icon || "📌", hidden: !!s.hidden });
+            });
+            setCats(merged);
+          }
         } catch {}
       } else {
-        // No prefs yet — detect new vs existing user
+        // No prefs yet — seed new users with modern category set
         const isNewUser = (expRows || []).length === 0;
         if (isNewUser) {
           setCats(NEW_DEFAULT_CATEGORIES);
-          // Seed prefs so future loads use new defaults
-          supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(NEW_DEFAULT_CATEGORIES) });
+          supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(NEW_DEFAULT_CATEGORIES) }).then(() => {});
         }
         // else: existing user with no customisation → keep OLD_DEFAULT_CATEGORIES (initial state)
       }
+      if (prefsRow?.banks_json) {
+        try {
+          const parsed = JSON.parse(prefsRow.banks_json);
+          setBanks(parsed);
+          if (parsed.length > 0) setPay(parsed[0].id);
+        } catch {}
+      }
       setDbReady(true);
+
+      // Onboarding: show guide for brand-new users (0 expenses, not previously dismissed)
+      if ((!expRows || expRows.length === 0)) {
+        try { if (!localStorage.getItem(`onboarded_${userId}`)) setOnboardStep(0); } catch {}
+      }
 
       expsChannel = supabase.channel(`exp:${userId}`)
         .on("postgres_changes",
@@ -173,6 +217,11 @@ export default function ExpenseTracker() {
     return () => { expsChannel?.unsubscribe(); tripsChannel?.unsubscribe(); };
   }, [userId]);
 
+  const dismissOnboard = useCallback(() => {
+    setOnboardStep(null);
+    try { localStorage.setItem(`onboarded_${userId}`, "1"); } catch {}
+  }, [userId]);
+
   // ── Computed ──────────────────────────────────────────────────────────────
   const getTAct = useCallback((t) => {
     const te = exps.filter(e => e.tripId === t.id);
@@ -191,7 +240,7 @@ export default function ExpenseTracker() {
   [trips, getTAct]);
 
   const addCats = useMemo(() => [
-    ...cats,
+    ...cats.filter(c => !c.hidden),
     ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips]);
 
@@ -200,10 +249,131 @@ export default function ExpenseTracker() {
     ...[...activeTrips, ...inactiveTrips].map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips, inactiveTrips]);
 
+  // Visible categories only — used for history filter dropdowns
+  const visCats = useMemo(() => allCats.filter(c => !c.hidden), [allCats]);
 
-  const sToast = useCallback((m, t = "ok") => { setToast({ m, t }); setTimeout(() => setToast(null), 1500); }, []);
+  // Dynamic payment modes: Cash + user's configured banks/cards
+  const payModes = useMemo(() => {
+    const modes = [{ id: "cash", label: "Cash" }];
+    if (banks.length > 0) {
+      banks.forEach(b => modes.push({ id: b.id, label: b.label + (b.type === "credit_card" ? " Card" : ""), bankType: b.type }));
+    } else {
+      modes.push({ id: "bank", label: "Bank" });
+    }
+    return modes;
+  }, [banks]);
+
+  // Get payment mode label for display (handles legacy "bank"/"card" values)
+  const getPayLabel = useCallback((payId) => {
+    if (payId === "cash") return "Cash";
+    if (payId === "bank") return "Bank";
+    if (payId === "card") return "Card";
+    const b = banks.find(x => x.id === payId);
+    return b ? b.label : "Bank";
+  }, [banks]);
+
+  const quickAmts = useMemo(() => {
+    const cutoff = Date.now() - 365 * 864e5;
+    const rec = exps.filter(e => new Date(e.date).getTime() > cutoff);
+    const freq = {};
+    rec.forEach(e => { freq[e.amount] = (freq[e.amount] || 0) + 1; });
+    const s = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([a]) => Number(a));
+    return s.length >= 3 ? s : [100, 200, 500, 1000, 2000];
+  }, [exps]);
+
+  // Smart context suggestions — shown when note is EMPTY and amount is filled.
+  // Scores each candidate note by multiple signals with recency decay; shows nothing
+  // rather than a low-confidence guess (quality gate on final score).
+  const noteSuggestions = useMemo(() => {
+    const amtNum = Number(amt);
+    if (!amtNum || amtNum <= 0) return [];
+    const now = Date.now();
+    const cutoff = now - 90 * 864e5;
+    const recent = exps.filter(e => new Date(e.date).getTime() > cutoff && e.note && e.note.trim());
+    if (recent.length === 0) return [];
+    const nowDate = new Date();
+    const nowDow = nowDate.getDay();
+    // Time-of-day bucket: 0=morning(5-11), 1=afternoon(12-17), 2=evening(18+), 3=night(<5)
+    const todBucket = (h) => h >= 5 && h < 12 ? 0 : h >= 12 && h < 18 ? 1 : h >= 18 ? 2 : 3;
+    const nowTod = todBucket(nowDate.getHours());
+    const scores = {}, freqs = {};
+    recent.forEach(e => {
+      const n = e.note.trim();
+      const eDate = new Date(e.date);
+      const sameCat = e.category === cat || (cat.startsWith("trip_") && e.tripId === cat.replace("trip_", ""));
+      const amtRatio = e.amount > 0 ? Math.abs(e.amount - amtNum) / Math.max(amtNum, e.amount) : 1;
+      const simAmt = amtRatio <= 0.20;
+      const verySimAmt = amtRatio <= 0.05;
+      const samePay = e.payMode === pay;
+      // Require at least 2 hard signals to suppress noise entirely
+      if ((sameCat ? 1 : 0) + (simAmt ? 1 : 0) + (samePay ? 1 : 0) < 2) return;
+      // Exponential recency decay: half-life ~21 days (recent entries count much more)
+      const recency = Math.exp(-(now - eDate.getTime()) / (21 * 864e5));
+      // Context score: category is the strongest signal, then amount precision, then mode
+      const ctx = (sameCat ? 4 : 0)
+        + (verySimAmt ? 3 : simAmt ? 1.5 : 0)
+        + (samePay ? 1.5 : 0)
+        + (eDate.getDay() === nowDow ? 0.7 : 0)          // weekly habit bonus
+        + (todBucket(eDate.getHours()) === nowTod ? 0.3 : 0); // time-of-day bonus
+      scores[n] = (scores[n] || 0) + ctx * recency;
+      freqs[n] = (freqs[n] || 0) + 1;
+    });
+    // Final score: context × log(frequency) × user-choice feedback boost.
+    // Quality gate (≥1.5) ensures we show nothing rather than a weak suggestion.
+    return Object.entries(scores)
+      .map(([n, sc]) => {
+        const fb = noteFeedback[n];
+        // Each past user choice adds a logarithmic boost (max ~+60% at 10 picks)
+        const fbBoost = fb ? 1 + 0.4 * Math.log1p(fb.count) : 1;
+        return { n, score: sc * Math.log1p(freqs[n]) * fbBoost };
+      })
+      .filter(({ score }) => score >= 1.5)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 3)
+      .map(({ n }) => n);
+  }, [exps, amt, cat, pay, noteFeedback]);
+
+  // Context-aware typing autocomplete — activates after 20 entries (enough history to be
+  // meaningful), scores prefix-matching completions by recency + context signals so the
+  // most relevant completion rises to the top. Trivial completions (<2 chars remaining)
+  // are suppressed. Max 3 items so it never crowds the screen.
+  const noteAutocomplete = useMemo(() => {
+    if (exps.length < 20) return [];
+    if (!note || note.length < 2) return [];
+    const q = note.toLowerCase();
+    const amtNum = Number(amt);
+    const now = Date.now();
+    const scores = {};
+    exps.forEach(e => {
+      const n = (e.note || "").trim();
+      if (!n || !n.toLowerCase().startsWith(q) || n.toLowerCase() === q) return;
+      if (n.slice(note.length).length < 2) return; // completion too trivial
+      const recency = Math.exp(-(now - new Date(e.date).getTime()) / (30 * 864e5));
+      const sameCat = e.category === cat || (cat.startsWith("trip_") && e.tripId === cat.replace("trip_", ""));
+      const amtRatio = amtNum > 0 && e.amount > 0 ? Math.abs(e.amount - amtNum) / Math.max(amtNum, e.amount) : 1;
+      const ctxBonus = (sameCat ? 2 : 0) + (amtRatio <= 0.25 ? 1 : 0) + (e.payMode === pay ? 0.5 : 0);
+      scores[n] = (scores[n] || 0) + (1 + ctxBonus) * recency;
+    });
+    return Object.entries(scores)
+      .map(([n, sc]) => {
+        const fb = noteFeedback[n];
+        const fbBoost = fb ? 1 + 0.4 * Math.log1p(fb.count) : 1;
+        return [n, sc * fbBoost];
+      })
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([n]) => n);
+  }, [exps, note, amt, cat, pay, noteFeedback]);
+
+  const toastTimer = useRef(null);
+  const sToast = useCallback((m, t = "ok") => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ m, t });
+    toastTimer.current = setTimeout(() => { setToast(null); toastTimer.current = null; }, 1500);
+  }, []);
 
   useEffect(() => { if (view === "add" && aRef.current) setTimeout(() => aRef.current?.focus(), 80); }, [view]);
+  useEffect(() => { if (session?.user?.user_metadata?.full_name) setProfileName(session.user.user_metadata.full_name); }, [session]);
 
   // ── Shortcut key management ───────────────────────────────────────────────
   useEffect(() => {
@@ -211,12 +381,6 @@ export default function ExpenseTracker() {
     supabase.from("user_keys").select("key_value").eq("user_id", userId).maybeSingle()
       .then(({ data }) => setUserKey(data?.key_value || null));
   }, [userId]);
-
-  // Load display name from user metadata
-  useEffect(() => {
-    const name = session?.user?.user_metadata?.display_name;
-    if (name) setDispName(name);
-  }, [session]);
 
   const handleGenerateKey = useCallback(async () => {
     setKeyLoading(true);
@@ -237,155 +401,10 @@ export default function ExpenseTracker() {
     navigator.clipboard?.writeText(userKey).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
   }, [userKey, sToast]);
 
-  // ── Export ────────────────────────────────────────────────────────────────
-  const doExportPDF = useCallback(() => {
-    if (filtered.length === 0) return;
-    const getCatLabel = (e) => {
-      if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
-      return cats.find(c => c.id === e.category)?.label || e.category;
-    };
-    const periodLabel = selTrip
-      ? `Trip: ${trips.find(t => t.id === selTrip)?.name || ""}`
-      : fCat !== "all" ? (allCats.find(c => c.id === fCat)?.label || "Category") : "All Categories";
-    const dates = filtered.map(e => new Date(e.date).getTime());
-    const dateRange = sameDay(Math.min(...dates), Math.max(...dates))
-      ? tds(Math.min(...dates))
-      : `${tds(Math.min(...dates))} \u2013 ${tds(Math.max(...dates))}`;
-    const total = filtered.reduce((s, e) => s + e.amount, 0);
-    const generated = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
-    const fileName = `Gurjar-Books-${periodLabel.replace(/[^\w]/g, "-")}-${new Date().toISOString().slice(0, 10)}`;
-    const rows = [...filtered].reverse().map(e => `
-      <tr>
-        <td>${tds(e.date)}</td>
-        <td class="t2">${tts(e.date)}</td>
-        <td>${getCatLabel(e)}</td>
-        <td>${e.note ? e.note.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "<span class='em'>\u2014</span>"}</td>
-        <td class="t2">${e.payMode === "cash" ? "Cash" : "Bank"}</td>
-        <td class="amt">\u20B9${e.amount.toLocaleString("en-IN")}</td>
-      </tr>`).join("");
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>${fileName}</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; color: #111; padding: 28px 32px; font-size: 13px; line-height: 1.5; }
-.header { padding-bottom: 14px; margin-bottom: 20px; border-bottom: 2.5px solid #111; }
-.brand { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
-.subtitle { font-size: 15px; font-weight: 700; color: #333; margin-top: 6px; }
-.meta { font-size: 11.5px; color: #666; margin-top: 4px; }
-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12.5px; }
-thead th { background: #111; color: #fff; padding: 8px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; text-align: left; }
-thead th.r { text-align: right; }
-td { padding: 7px 10px; border-bottom: 1px solid #EBEBEB; vertical-align: top; }
-tr:nth-child(even) td { background: #F8F8F8; }
-td.amt { text-align: right; font-weight: 700; white-space: nowrap; }
-td.t2 { color: #666; white-space: nowrap; }
-.em { color: #AAA; }
-.summary { display: flex; justify-content: space-between; align-items: flex-end; padding-top: 14px; border-top: 2px solid #111; }
-.sum-label { font-size: 11px; font-weight: 700; color: #666; letter-spacing: 0.8px; text-transform: uppercase; }
-.sum-total { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-top: 3px; }
-.sum-meta { font-size: 12px; color: #888; }
-.footer { margin-top: 24px; font-size: 10px; color: #BBB; text-align: center; }
-@media print { body { padding: 0; } @page { margin: 1.5cm; size: A4 portrait; } }
-</style>
-</head>
-<body>
-<div class="header">
-  <div class="brand">\u20B9 Expense Tracker</div>
-  <div class="subtitle">Expense Report &middot; ${periodLabel}</div>
-  <div class="meta">Period: <b>${dateRange}</b> &nbsp;&middot;&nbsp; Generated: ${generated}${fPay !== "all" ? ` &nbsp;&middot;&nbsp; ${fPay === "cash" ? "Cash" : "Bank"} only` : ""}</div>
-</div>
-<table>
-  <thead>
-    <tr>
-      <th>Date</th>
-      <th>Time</th>
-      <th>Category</th>
-      <th>Note</th>
-      <th>Mode</th>
-      <th class="r">Amount</th>
-    </tr>
-  </thead>
-  <tbody>${rows}</tbody>
-</table>
-<div class="summary">
-  <div class="sum-meta">${filtered.length} entr${filtered.length === 1 ? "y" : "ies"}</div>
-  <div style="text-align:right">
-    <div class="sum-label">Total</div>
-    <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
-  </div>
-</div>
-<div class="footer">Expense Tracker &nbsp;&middot;&nbsp; expenses.gurjarbooks.com</div>
-<script>document.title = "${fileName}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
-</body>
-</html>`;
-    const win = window.open("", "_blank");
-    if (win) { win.document.write(html); win.document.close(); }
-    else sToast("Allow pop-ups to export PDF", "err");
-  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast]);
-
-  const doExportCSV = useCallback(() => {
-    if (filtered.length === 0) return;
-    const getCatLabel = (e) => {
-      if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
-      return cats.find(c => c.id === e.category)?.label || e.category;
-    };
-    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
-    const header = ["Date", "Time", "Category", "Note", "Payment Mode", "Amount (INR)"].join(",");
-    const csvRows = [...filtered].reverse().map(e =>
-      [tds(e.date), tts(e.date), esc(getCatLabel(e)), esc(e.note || ""), e.payMode === "cash" ? "Cash" : "Bank", e.amount].join(",")
-    );
-    const csv = [header, ...csvRows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = `Gurjar-Books-${new Date().toISOString().slice(0, 10)}.csv`; a.click();
-    URL.revokeObjectURL(url);
-    sToast("CSV downloaded");
-  }, [filtered, cats, trips, sToast]);
-
-  // ── Custom categories ─────────────────────────────────────────────────────
-  const openCatMod = useCallback(() => {
-    setEditCats(cats.map(c => ({ ...c })));
-    setNewCatIcon(""); setNewCatLabel(""); setDragIdx(null);
-    setCatMod(true);
-  }, [cats]);
-
-  const saveCustomCats = useCallback(async () => {
-    setCatSaving(true);
-    const cleaned = editCats
-      .filter(c => c.label.trim())
-      .map(c => ({ id: c.id, label: c.label.trim(), icon: c.icon.trim() || "📦" }));
-    // Ensure investment (savings) is always present
-    if (!cleaned.find(c => c.id === "investment")) cleaned.push({ id: "investment", label: "Savings", icon: "₹" });
-    setCats(cleaned);
-    setCatMod(false);
-    setCatSaving(false);
-    await supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(cleaned) });
-  }, [editCats, userId]);
-
-  const addNewCat = useCallback(() => {
-    if (!newCatLabel.trim()) return;
-    const id = "custom_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
-    setEditCats(p => [...p, { id, label: newCatLabel.trim(), icon: newCatIcon.trim() || "📦" }]);
-    setNewCatLabel(""); setNewCatIcon("");
-  }, [newCatLabel, newCatIcon]);
-
-  const moveCat = useCallback((fromIdx, toIdx) => {
-    setEditCats(p => {
-      const a = [...p];
-      const [item] = a.splice(fromIdx, 1);
-      a.splice(toIdx, 0, item);
-      return a;
-    });
-    setDragIdx(null);
-  }, []);
-
-  const switchToNewDefaults = useCallback(async () => {
-    setEditCats(NEW_DEFAULT_CATEGORIES.map(c => ({ ...c })));
-  }, []);
+  const API_BASE = "https://expenses.gurjarbooks.com";
+  const copyText = useCallback((text) => {
+    navigator.clipboard?.writeText(text).then(() => sToast("Copied!")).catch(() => sToast("Copy failed", "err"));
+  }, [sToast]);
 
   // ── CRUD — all optimistic ─────────────────────────────────────────────────
   const doSave = useCallback(async () => {
@@ -395,7 +414,8 @@ td.t2 { color: #666; white-space: nowrap; }
     const tid = cat.startsWith("trip_") ? cat.replace("trip_", "") : null;
     if (editId) {
       const orig = exps.find(e => e.id === editId);
-      const updated = { ...orig, amount: v, note: note.trim(), category: tid ? "trip" : cat, payMode: pay, tripId: tid, date: editDate ? new Date(editDate + "T12:00:00").toISOString() : orig?.date };
+      const origTime = orig?.date ? new Date(orig.date).toISOString().slice(11) : "12:00:00.000Z";
+      const updated = { ...orig, amount: v, note: note.trim(), category: tid ? "trip" : cat, payMode: pay, tripId: tid, date: editDate ? new Date(editDate + "T" + origTime).toISOString() : orig?.date };
       setExps(p => p.map(e => e.id === editId ? updated : e).sort((a, b) => new Date(b.date) - new Date(a.date)));
       setEditId(null); setEditDate(""); sToast("Updated");
       supabase.from("expenses").update(expToDb(updated, userId)).eq("id", editId)
@@ -479,6 +499,9 @@ td.t2 { color: #666; white-space: nowrap; }
   // ── Filtered list ─────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let l = [...exps];
+    // Date range filter
+    if (histPeriod === "month") l = l.filter(e => { const d = new Date(e.date); return d.getMonth() === histMonth.month && d.getFullYear() === histMonth.year; });
+    else if (histPeriod === "year") l = l.filter(e => new Date(e.date).getFullYear() === histYear);
     if (selTrip) l = l.filter(e => e.tripId === selTrip);
     else if (fCat !== "all") {
       if (fCat.startsWith("trip_")) l = l.filter(e => e.tripId === fCat.replace("trip_", ""));
@@ -489,12 +512,195 @@ td.t2 { color: #666; white-space: nowrap; }
       const q = sq.toLowerCase();
       l = l.filter(e => {
         const catLabel = (allCats.find(c => c.id === (e.tripId ? `trip_${e.tripId}` : e.category))?.label || "").toLowerCase();
-        const payLabel = (PAY.find(p => p.id === e.payMode)?.label || e.payMode).toLowerCase();
+        const payLabel = getPayLabel(e.payMode).toLowerCase();
         return (e.note || "").toLowerCase().includes(q) || e.amount.toString().includes(q) || catLabel.includes(q) || payLabel.includes(q);
       });
     }
     return l;
-  }, [exps, fCat, fPay, sq, selTrip, allCats]);
+  }, [exps, fCat, fPay, sq, selTrip, allCats, histPeriod, histMonth, histYear]);
+
+  // ── Export ────────────────────────────────────────────────────────────────
+  const esc = useCallback((v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"), []);
+  const doExportPDF = useCallback(() => {
+    if (filtered.length === 0) return;
+    const getCatLabel = (e) => {
+      if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
+      return cats.find(c => c.id === e.category)?.label || e.category;
+    };
+    const userName = session?.user?.user_metadata?.full_name || session?.user?.email?.split("@")[0] || "Expense Report";
+    const periodLabel = selTrip
+      ? `Trip: ${trips.find(t => t.id === selTrip)?.name || ""}`
+      : fCat !== "all" ? (allCats.find(c => c.id === fCat)?.label || "Category") : "All Categories";
+    const dates = filtered.map(e => new Date(e.date).getTime());
+    const dateRange = sameDay(Math.min(...dates), Math.max(...dates))
+      ? tds(Math.min(...dates))
+      : `${tds(Math.min(...dates))} \u2013 ${tds(Math.max(...dates))}`;
+    const total = filtered.reduce((s, e) => s + e.amount, 0);
+    const generated = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+    const fileName = `Expenses-${esc(periodLabel).replace(/[^\w]/g, "-")}-${new Date().toISOString().slice(0, 10)}`;
+    const rows = [...filtered].reverse().map(e => `
+      <tr>
+        <td>${tds(e.date)}</td>
+        <td class="t2">${tts(e.date)}</td>
+        <td>${esc(getCatLabel(e))}</td>
+        <td>${e.note ? esc(e.note) : "<span class='em'>\u2014</span>"}</td>
+        <td class="t2">${esc(getPayLabel(e.payMode))}</td>
+        <td class="amt">\u20B9${e.amount.toLocaleString("en-IN")}</td>
+      </tr>`).join("");
+    const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>${esc(fileName)}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; color: #111; padding: 28px 32px; font-size: 13px; line-height: 1.5; }
+.header { padding-bottom: 14px; margin-bottom: 20px; border-bottom: 2.5px solid #111; }
+.brand { font-size: 20px; font-weight: 800; letter-spacing: -0.5px; }
+.subtitle { font-size: 15px; font-weight: 700; color: #333; margin-top: 6px; }
+.meta { font-size: 11.5px; color: #666; margin-top: 4px; }
+table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 12.5px; }
+thead th { background: #111; color: #fff; padding: 8px 10px; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; text-transform: uppercase; text-align: left; }
+thead th.r { text-align: right; }
+td { padding: 7px 10px; border-bottom: 1px solid #EBEBEB; vertical-align: top; }
+tr:nth-child(even) td { background: #F8F8F8; }
+td.amt { text-align: right; font-weight: 700; white-space: nowrap; }
+td.t2 { color: #666; white-space: nowrap; }
+.em { color: #AAA; }
+.summary { display: flex; justify-content: space-between; align-items: flex-end; padding-top: 14px; border-top: 2px solid #111; }
+.sum-label { font-size: 11px; font-weight: 700; color: #666; letter-spacing: 0.8px; text-transform: uppercase; }
+.sum-total { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-top: 3px; }
+.sum-meta { font-size: 12px; color: #888; }
+.footer { margin-top: 24px; font-size: 10px; color: #BBB; text-align: center; }
+@media print { body { padding: 0; } @page { margin: 1.5cm; size: A4 portrait; } }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="brand">${esc(userName)}</div>
+  <div class="subtitle">Expense Report &middot; ${esc(periodLabel)}</div>
+  <div class="meta">Period: <b>${dateRange}</b> &nbsp;&middot;&nbsp; Generated: ${generated}${fPay !== "all" ? ` &nbsp;&middot;&nbsp; ${fPay === "cash" ? "Cash" : "Bank"} only` : ""}</div>
+</div>
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Time</th>
+      <th>Category</th>
+      <th>Note</th>
+      <th>Mode</th>
+      <th class="r">Amount</th>
+    </tr>
+  </thead>
+  <tbody>${rows}</tbody>
+</table>
+<div class="summary">
+  <div class="sum-meta">${filtered.length} entr${filtered.length === 1 ? "y" : "ies"}</div>
+  <div style="text-align:right">
+    <div class="sum-label">Total</div>
+    <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
+  </div>
+</div>
+<div class="footer">Expense Tracker</div>
+<script>document.title = "${esc(fileName)}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
+</body>
+</html>`;
+    const win = window.open("", "_blank");
+    if (win) { win.document.write(html); win.document.close(); }
+    else sToast("Allow pop-ups to export PDF", "err");
+  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast, session, esc]);
+
+  const doExportXLSX = useCallback(async () => {
+    if (filtered.length === 0) return;
+    sToast("Generating Excel…");
+    const ExcelJS = (await import("exceljs")).default;
+    const getCatLabel = (e) => {
+      if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; }
+      return cats.find(c => c.id === e.category)?.label || e.category;
+    };
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Expenses");
+    ws.columns = [
+      { header: "Date", key: "date", width: 14 },
+      { header: "Time", key: "time", width: 10 },
+      { header: "Category", key: "category", width: 16 },
+      { header: "Note", key: "note", width: 30 },
+      { header: "Payment Mode", key: "payMode", width: 14 },
+      { header: "Amount (INR)", key: "amount", width: 14 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+    ws.autoFilter = { from: "A1", to: "F1" };
+    [...filtered].reverse().forEach(e => {
+      ws.addRow({ date: tds(e.date), time: tts(e.date), category: getCatLabel(e), note: e.note || "", payMode: getPayLabel(e.payMode), amount: e.amount });
+    });
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `Expenses-${new Date().toISOString().slice(0, 10)}.xlsx`; a.click();
+    URL.revokeObjectURL(url);
+    sToast("Excel downloaded");
+  }, [filtered, cats, trips, sToast]);
+
+  // ── Custom categories ─────────────────────────────────────────────────────
+  const openCatMod = useCallback(() => {
+    setEditCats(cats.map(c => ({ ...c })));
+    setNewCatIcon(""); setNewCatLabel(""); setDragIdx(null);
+    setCatMod(true);
+  }, [cats]);
+
+  const saveCustomCats = useCallback(async () => {
+    setCatSaving(true);
+    const cleaned = editCats.filter(c => c.label.trim()).map(c => {
+      const def = DEFAULT_CATEGORIES.find(d => d.id === c.id);
+      return { id: c.id, label: c.label.trim() || (def ? def.label : "Custom"), icon: c.icon.trim() || (def ? def.icon : "📌"), hidden: !!c.hidden };
+    });
+    setCats(cleaned);
+    setCatMod(false);
+    const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(cleaned) });
+    setCatSaving(false);
+    if (error) sToast("Sync error", "err");
+  }, [editCats, userId, sToast]);
+
+  const addNewCat = useCallback(() => {
+    if (!newCatLabel.trim()) return;
+    const id = "custom_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
+    setEditCats(p => [...p, { id, label: newCatLabel.trim(), icon: newCatIcon.trim() || "📦", hidden: false }]);
+    setNewCatLabel(""); setNewCatIcon("");
+  }, [newCatLabel, newCatIcon]);
+
+  const moveCat = useCallback((fromIdx, toIdx) => {
+    setEditCats(p => {
+      const a = [...p];
+      const [item] = a.splice(fromIdx, 1);
+      a.splice(toIdx, 0, item);
+      return a;
+    });
+    setDragIdx(null);
+  }, []);
+
+  const switchToNewDefaults = useCallback(() => {
+    setEditCats(NEW_DEFAULT_CATEGORIES.map(c => ({ ...c })));
+  }, []);
+
+  // ── Banks & Cards ───────────────────────────────────────────────────────
+  const openBankMod = useCallback(() => {
+    setEditBanks(banks.map(b => ({ ...b })));
+    setBankMod(true);
+  }, [banks]);
+
+  const saveBanks = useCallback(async () => {
+    setBankSaving(true);
+    const cleaned = editBanks.filter(b => b.label.trim()).map(b => ({
+      id: b.id, label: b.label.trim(), type: b.type || "bank", last4: (b.last4 || "").trim(),
+    }));
+    setBanks(cleaned);
+    setBankMod(false);
+    const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, banks_json: JSON.stringify(cleaned) });
+    setBankSaving(false);
+    if (error) sToast("Sync error", "err");
+  }, [editBanks, userId, sToast]);
 
   // ── Insights ──────────────────────────────────────────────────────────────
   const insPeriodLabel = useMemo(() => {
@@ -552,16 +758,39 @@ td.t2 { color: #666; white-space: nowrap; }
     setInsPeriod(p => p === "month" ? "year" : p === "year" ? "all" : "month");
   }, []);
 
+  // History period helpers
+  const histPeriodLabel = useMemo(() => {
+    if (histPeriod === "all") return "All Time";
+    if (histPeriod === "year") return histYear.toString();
+    return new Date(histMonth.year, histMonth.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+  }, [histMonth, histYear, histPeriod]);
+
+  const shiftHistPeriod = useCallback((dir) => {
+    if (histPeriod === "month") {
+      setHistMonth(prev => {
+        let m = prev.month + dir, y = prev.year;
+        if (m < 0) { m = 11; y--; } if (m > 11) { m = 0; y++; }
+        return { year: y, month: m };
+      });
+    } else if (histPeriod === "year") {
+      setHistYear(prev => prev + dir);
+    }
+  }, [histPeriod]);
+
+  const cycleHistPeriod = useCallback(() => {
+    setHistPeriod(p => p === "all" ? "month" : p === "month" ? "year" : "all");
+  }, []);
+
   // ── Trip insights ─────────────────────────────────────────────────────────
   const getTI = useCallback((tid) => {
     const te = exps.filter(e => e.tripId === tid).sort((a, b) => new Date(a.date) - new Date(b.date));
     const tot = te.reduce((s, e) => s + e.amount, 0);
-    const cash = te.filter(e => e.payMode === "cash").reduce((s, e) => s + e.amount, 0);
-    const bank = te.filter(e => e.payMode === "bank").reduce((s, e) => s + e.amount, 0);
+    const byPay = {};
+    te.forEach(e => { byPay[e.payMode] = (byPay[e.payMode] || 0) + e.amount; });
     let d = 0;
     if (te.length > 1) d = Math.max(1, Math.ceil((new Date(te[te.length - 1].date) - new Date(te[0].date)) / 864e5) + 1);
     else if (te.length === 1) d = 1;
-    return { tot, cash, bank, d, avg: d > 0 ? Math.round(tot / d) : 0, cnt: te.length };
+    return { tot, byPay, d, avg: d > 0 ? Math.round(tot / d) : 0, cnt: te.length };
   }, [exps]);
 
   // ── Swipe handlers ────────────────────────────────────────────────────────
@@ -583,7 +812,7 @@ td.t2 { color: #666; white-space: nowrap; }
   const getCI = (e) => { if (e.tripId) return "\u2708\uFE0F"; return cats.find(c => c.id === e.category)?.icon || "?"; };
 
   const navTo = (t) => { hap(); if (t === "list") { setSelTrip(null); setFCat("all"); setFPay("all"); setSq(""); } setSw({ id: null, dir: null }); setSwipeConf(null); setView(t); };
-  const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setView("list"); };
+  const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setHistPeriod("all"); setView("list"); };
 
   const B = (sel, children, onClick, extra = {}) => (
     <button onClick={onClick} style={{ padding: "7px 10px", borderRadius: 18, cursor: "pointer", fontSize: 13, fontWeight: sel ? 700 : 500, border: `2px solid ${sel ? G.bk : G.bdr}`, background: sel ? G.bk : G.bg, color: sel ? G.wh : G.t2, ...extra }}>{children}</button>
@@ -614,8 +843,8 @@ td.t2 { color: #666; white-space: nowrap; }
           </span>
         </div>
         <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={() => setKeyMod(true)} title="API Key" style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", fontSize: 15, color: G.t3, cursor: "pointer", lineHeight: 1 }}>🔑</button>
-          <button onClick={signOut} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 11px", fontSize: 13, fontWeight: 600, color: G.t3, cursor: "pointer" }}>Out</button>
+          <button onClick={() => setKeyMod(true)} title="SMS Automation" style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", fontSize: 15, color: G.t3, cursor: "pointer", lineHeight: 1 }}>🔑</button>
+          <button onClick={() => setProfileMod(true)} title="Profile" style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", fontSize: 15, color: G.t3, cursor: "pointer", lineHeight: 1 }}>👤</button>
         </div>
       </header>
 
@@ -638,28 +867,57 @@ td.t2 { color: #666; white-space: nowrap; }
               {amt !== "" && <button onClick={() => { hap(); setAmt(""); aRef.current?.focus(); }} tabIndex={-1} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: G.tm, padding: "0 4px", lineHeight: 1 }}>{"\u2715"}</button>}
             </div>
 
+            <div style={{ display: "flex", gap: 6, justifyContent: "center", flexWrap: "wrap", margin: "0 0 8px" }}>
+              {quickAmts.map(a => (
+                <button key={a} onClick={() => { hap(); setAmt(a.toString()); }} style={{ padding: "7px 15px", borderRadius: 18, border: "none", cursor: "pointer", fontSize: 15, fontWeight: 600, background: amt === a.toString() ? G.bk : G.bg2, color: amt === a.toString() ? G.wh : G.t2 }}>
+                  {a >= 1000 ? `${a / 1000}k` : a}
+                </button>
+              ))}
+            </div>
+
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, textTransform: "uppercase", letterSpacing: 1.5 }}>Category</div>
                 <button onClick={openCatMod} title="Customise categories" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: G.tm, padding: "2px 4px", lineHeight: 1, fontWeight: 600 }}>✎ edit</button>
               </div>
-              <div style={{ display: "flex", gap: 5, overflowX: "auto", WebkitOverflowScrolling: "touch", paddingBottom: 2, scrollbarWidth: "none", msOverflowStyle: "none" }}>
-                {addCats.map(c => B(cat === c.id, `${c.icon} ${c.label}`, () => { hap(); setCat(c.id); }, { flexShrink: 0 }))}
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {addCats.map(c => B(cat === c.id, c.label, () => { hap(); setCat(c.id); }))}
               </div>
             </div>
 
             <div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, textTransform: "uppercase", letterSpacing: 1.5, marginBottom: 6 }}>Paid via</div>
-              <div style={{ display: "flex", background: G.bg2, borderRadius: 12, padding: 3 }}>
-                {PAY.map(p => (
-                  <button key={p.id} onClick={() => { hap(); setPay(p.id); }} style={{ flex: 1, padding: "11px 0", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 16, fontWeight: 700, background: pay === p.id ? G.bk : "transparent", color: pay === p.id ? G.wh : G.t3 }}>{p.label}</button>
-                ))}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, textTransform: "uppercase", letterSpacing: 1.5 }}>Paid via</div>
+                <button onClick={openBankMod} title="Manage banks" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: G.tm, padding: "2px 4px", lineHeight: 1, fontWeight: 600 }}>✎ edit</button>
+              </div>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {payModes.map(p => B(pay === p.id, p.label, () => { hap(); setPay(p.id); }))}
               </div>
             </div>
 
             <div style={{ position: "relative" }}>
-              <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
-              {note && <button onClick={() => { hap(); setNote(""); }} tabIndex={-1} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, color: G.tm, padding: "0 2px", lineHeight: 1, zIndex: 1 }}>{"\u2715"}</button>}
+              <div style={{ position: "relative" }}>
+                <input type="text" placeholder="Note (optional)" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === "Enter") doSave(); if (e.key === "Tab" && noteAutocomplete.length > 0) { e.preventDefault(); hap(); trackNoteChosen(noteAutocomplete[0]); setNote(noteAutocomplete[0]); } }} style={{ width: "100%", padding: "12px 14px", paddingRight: note ? "38px" : "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 16, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2 }} autoComplete="off" />
+                {note && <button onClick={() => { hap(); setNote(""); }} tabIndex={-1} style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", cursor: "pointer", fontSize: 18, color: G.tm, padding: "0 2px", lineHeight: 1, zIndex: 1 }}>{"\u2715"}</button>}
+              </div>
+              {/* Autocomplete dropdown: shows while typing (after 3 entries) */}
+              {noteAutocomplete.length > 0 && (
+                <div style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 3, background: G.bg, border: `1.5px solid ${G.bdr}`, borderRadius: 12, zIndex: 50, overflow: "hidden", boxShadow: "0 4px 16px rgba(0,0,0,.10)" }}>
+                  {noteAutocomplete.map((s, i) => (
+                    <button key={s} onPointerDown={e => { e.preventDefault(); hap(); trackNoteChosen(s); setNote(s); }} style={{ display: "block", width: "100%", padding: "11px 14px", border: "none", borderTop: i > 0 ? `1px solid ${G.lt}` : "none", background: "transparent", textAlign: "left", fontSize: 15, color: G.t1, cursor: "pointer", fontWeight: i === 0 ? 600 : 400 }}>
+                      <span style={{ color: G.t3 }}>{note}</span>{s.slice(note.length)}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {/* Context suggestions: shows when note is empty & amount is filled */}
+              {noteSuggestions.length > 0 && !note && (
+                <div style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 6, paddingBottom: 2, WebkitOverflowScrolling: "touch" }}>
+                  {noteSuggestions.map(s => (
+                    <button key={s} onClick={() => { hap(); trackNoteChosen(s); setNote(s); }} style={{ padding: "5px 12px", borderRadius: 16, border: `1.5px solid ${G.bdr}`, background: G.bg2, color: G.t2, fontSize: 12, fontWeight: 500, whiteSpace: "nowrap", cursor: "pointer", flexShrink: 0 }}>{s}</button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div>
@@ -704,14 +962,26 @@ td.t2 { color: #666; white-space: nowrap; }
             </div>
 
             {!selTrip && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, background: G.bg2, borderRadius: 12, padding: "4px 4px" }}>
+                {histPeriod !== "all" ? (
+                  <button onClick={() => shiftHistPeriod(-1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u2039"}</button>
+                ) : <div style={{ width: 36 }} />}
+                <button onClick={cycleHistPeriod} style={{ flex: 1, padding: "7px 0", border: "none", background: "transparent", fontSize: 14, fontWeight: 700, cursor: "pointer", color: G.t1, textAlign: "center" }}>{histPeriodLabel}</button>
+                {histPeriod !== "all" ? (
+                  <button onClick={() => shiftHistPeriod(1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u203A"}</button>
+                ) : <div style={{ width: 36 }} />}
+              </div>
+            )}
+
+            {!selTrip && (
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <select value={fCat} onChange={e => setFCat(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Categories</option>
-                  {allCats.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  {visCats.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
                 </select>
                 <select value={fPay} onChange={e => setFPay(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Modes</option>
-                  {PAY.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  {payModes.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
                 </select>
               </div>
             )}
@@ -726,7 +996,7 @@ td.t2 { color: #666; white-space: nowrap; }
               })()}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 {filtered.length > 0 && (<>
-                  <button onClick={doExportCSV} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t3, cursor: "pointer", letterSpacing: 0.3 }}>CSV</button>
+                  <button onClick={doExportXLSX} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t3, cursor: "pointer", letterSpacing: 0.3 }}>Excel</button>
                   <button onClick={doExportPDF} style={{ background: G.bg2, border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t2, cursor: "pointer", letterSpacing: 0.3 }}>PDF</button>
                 </>)}
                 <span style={{ fontWeight: 800, fontSize: 16, color: G.t1 }}>{formatINR(filtered.reduce((s, e) => s + e.amount, 0))}</span>
@@ -775,7 +1045,7 @@ td.t2 { color: #666; white-space: nowrap; }
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontWeight: 800, fontSize: 17 }}>{formatINR(exp.amount)}</div>
                               <div style={{ fontSize: 14, color: G.t3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {exp.note || getCL(exp)}<span style={{ marginLeft: 6, fontSize: 12, color: G.tm }}>{"\u00B7"} {exp.payMode === "cash" ? "Cash" : "Bank"}</span>
+                                {exp.note || getCL(exp)}<span style={{ marginLeft: 6, fontSize: 12, color: G.tm }}>{"\u00B7"} {getPayLabel(exp.payMode)}</span>
                               </div>
                             </div>
                             <div style={{ fontSize: 12, color: G.tm, flexShrink: 0 }}>{tts(exp.date)}</div>
@@ -816,11 +1086,13 @@ td.t2 { color: #666; white-space: nowrap; }
                 <div style={{ fontSize: 22, fontWeight: 800, marginTop: 5, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
                 <div style={{ fontSize: 12, color: "#666", marginTop: 3 }}>{ins.mc} entries</div>
               </div>
+              {!cats.find(c => c.id === "investment")?.hidden && (
               <div style={{ flex: 1, borderRadius: 14, padding: "14px 14px", background: G.bg2, border: `1.5px solid ${G.bdr}` }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase" }}>Savings</div>
                 <div style={{ fontSize: 22, fontWeight: 800, marginTop: 5, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
                 <div style={{ fontSize: 12, color: G.tm, marginTop: 3 }}>{insPeriod === "all" ? "all time" : insPeriod === "year" ? insYear : new Date(insMonth.year, insMonth.month).toLocaleDateString("en-IN", { month: "short" })}</div>
               </div>
+              )}
             </div>
 
             {/* Yearly bar chart — monthly breakdown */}
@@ -847,13 +1119,57 @@ td.t2 { color: #666; white-space: nowrap; }
               );
             })()}
 
+            {/* Pie Chart */}
+            {Object.keys(ins.bc).length > 0 && (() => {
+              const PIE_COLORS = ["#111", "#555", "#999", "#C4C4C4", "#E8B4B4", "#A8C8E8", "#C8E8A8", "#E8D8A8"];
+              const entries = Object.entries(ins.bc).sort((a, b) => b[1] - a[1]);
+              const total = ins.totM || 1;
+              let cumAngle = 0;
+              const slices = entries.map(([cid, amt], i) => {
+                const frac = amt / total;
+                const startAngle = cumAngle;
+                cumAngle += frac * 360;
+                const endAngle = cumAngle;
+                const startRad = (startAngle - 90) * Math.PI / 180;
+                const endRad = (endAngle - 90) * Math.PI / 180;
+                const largeArc = frac > 0.5 ? 1 : 0;
+                const x1 = 50 + 45 * Math.cos(startRad), y1 = 50 + 45 * Math.sin(startRad);
+                const x2 = 50 + 45 * Math.cos(endRad), y2 = 50 + 45 * Math.sin(endRad);
+                const d = frac >= 0.999
+                  ? `M 50 5 A 45 45 0 1 1 49.99 5 Z`
+                  : `M 50 50 L ${x1} ${y1} A 45 45 0 ${largeArc} 1 ${x2} ${y2} Z`;
+                return { cid, d, color: PIE_COLORS[i % PIE_COLORS.length], label: (allCats.find(x => x.id === cid) || cats[0]).label, pct: Math.round(frac * 100) };
+              });
+              return (
+                <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>Spending Breakdown</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                    <svg viewBox="0 0 100 100" style={{ width: 130, height: 130, flexShrink: 0 }}>
+                      {slices.map((s, i) => <path key={i} d={s.d} fill={s.color} />)}
+                      <circle cx="50" cy="50" r="22" fill={G.bg2} />
+                    </svg>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      {slices.slice(0, 6).map((s, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5 }}>
+                          <div style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
+                          <span style={{ fontSize: 12, color: G.t2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{s.label}</span>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: G.t1, flexShrink: 0 }}>{s.pct}%</span>
+                        </div>
+                      ))}
+                      {slices.length > 6 && <div style={{ fontSize: 11, color: G.tm }}>+{slices.length - 6} more</div>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             <div style={{ marginBottom: 22 }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>By Category <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· tap to filter history</span></div>
               {Object.entries(ins.bc).sort((a, b) => b[1] - a[1]).map(([cid, a]) => {
                 const c = allCats.find(x => x.id === cid) || cats[0];
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
                 return (
-                  <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
+                  <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span>{c.label}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
                     <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: G.dk, width: `${p}%`, transition: "width .4s" }} /></div>
                     <div style={{ fontSize: 12, color: G.tm, marginTop: 3, textAlign: "right" }}>{Math.round(p)}%</div>
@@ -867,8 +1183,8 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>By Payment Mode <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>{"\u00B7"} tap to filter history</span></div>
               {Object.entries(ins.bp).sort((a, b) => b[1] - a[1]).map(([pid, a]) => {
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
-                return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span>{PAY.find(x => x.id === pid)?.label || pid}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
+                return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span>{getPayLabel(pid)}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
                   <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: G.ac, width: `${p}%`, transition: "width .4s" }} /></div>
                   <div style={{ fontSize: 12, color: G.tm, marginTop: 3, textAlign: "right" }}>{Math.round(p)}%</div>
                 </div>);
@@ -884,7 +1200,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
             {activeTrips.length > 0 && <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: G.tm, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Active</div>
-              {activeTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? Math.min(100, (tot / t.budget) * 100) : 0; const barCol = pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
+              {activeTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? (tot / t.budget) * 100 : 0; const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
                 <div key={t.id} onClick={() => setTripDet(t.id)} style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, borderLeft: `4px solid ${G.bk}`, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
@@ -892,7 +1208,7 @@ td.t2 { color: #666; white-space: nowrap; }
                   </div>
                   {t.budget > 0 && <div style={{ marginTop: 10 }}>
                     <div style={{ height: 5, background: G.bg3, borderRadius: 5, overflow: "hidden" }}>
-                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${pct}%`, transition: "width .4s" }} />
+                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${Math.min(100, pct)}%`, transition: "width .4s" }} />
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: G.tm, marginTop: 4 }}>
                       <span style={{ color: barCol, fontWeight: 600 }}>{Math.round(pct)}% used</span>
@@ -905,7 +1221,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
             {inactiveTrips.length > 0 && <div>
               <div style={{ fontSize: 13, fontWeight: 700, color: G.tm, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Hidden (7+ days inactive)</div>
-              {inactiveTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? Math.min(100, (tot / t.budget) * 100) : 0; const barCol = pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
+              {inactiveTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? (tot / t.budget) * 100 : 0; const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
                 <div key={t.id} onClick={() => setTripDet(t.id)} style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, borderLeft: `4px solid ${G.lt}`, cursor: "pointer", opacity: .7 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
@@ -913,7 +1229,7 @@ td.t2 { color: #666; white-space: nowrap; }
                   </div>
                   {t.budget > 0 && <div style={{ marginTop: 10 }}>
                     <div style={{ height: 5, background: G.bg3, borderRadius: 5, overflow: "hidden" }}>
-                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${pct}%`, transition: "width .4s" }} />
+                      <div style={{ height: 5, borderRadius: 5, background: barCol, width: `${Math.min(100, pct)}%`, transition: "width .4s" }} />
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: G.tm, marginTop: 4 }}>
                       <span style={{ color: barCol, fontWeight: 600 }}>{Math.round(pct)}% used</span>
@@ -947,10 +1263,10 @@ td.t2 { color: #666; white-space: nowrap; }
                 </div>
                 <div style={{ fontSize: 30, fontWeight: 800, marginTop: 12, letterSpacing: -1 }}>{formatINR(ti.tot)}</div>
                 {trip.budget > 0 && (() => {
-                  const pct = Math.min(100, (ti.tot / trip.budget) * 100);
+                  const pct = (ti.tot / trip.budget) * 100;
                   const remaining = trip.budget - ti.tot;
                   const over = remaining < 0;
-                  const barCol = pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759";
+                  const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759";
                   return (
                     <div style={{ marginTop: 14 }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
@@ -958,7 +1274,7 @@ td.t2 { color: #666; white-space: nowrap; }
                         <span style={{ fontSize: 13, fontWeight: 700, color: over ? "#FF6B6B" : "#AAA" }}>{over ? `${formatINR(Math.abs(remaining))} over` : `${formatINR(remaining)} left`}</span>
                       </div>
                       <div style={{ height: 8, background: "#2A2A2A", borderRadius: 8, overflow: "hidden" }}>
-                        <div style={{ height: 8, borderRadius: 8, background: barCol, width: `${pct}%`, transition: "width .6s ease" }} />
+                        <div style={{ height: 8, borderRadius: 8, background: barCol, width: `${Math.min(100, pct)}%`, transition: "width .6s ease" }} />
                       </div>
                       <div style={{ fontSize: 12, color: barCol, fontWeight: 600, marginTop: 5, textAlign: "right" }}>{Math.round(pct)}% used</div>
                     </div>
@@ -967,9 +1283,10 @@ td.t2 { color: #666; white-space: nowrap; }
               </div>
 
               <div style={{ background: G.bg2, borderRadius: 12, padding: 16, marginBottom: 14, border: `1px solid ${G.bdr}` }}>
-                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Cash Flow</div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 15, color: G.t2 }}>Cash</span><span style={{ fontSize: 15, fontWeight: 700 }}>{formatINR(ti.cash)}</span></div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}><span style={{ fontSize: 15, color: G.t2 }}>Bank</span><span style={{ fontSize: 15, fontWeight: 700 }}>{formatINR(ti.bank)}</span></div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>Payment Breakdown</div>
+                {Object.entries(ti.byPay).sort((a, b) => b[1] - a[1]).map(([pid, amt]) => (
+                  <div key={pid} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}><span style={{ fontSize: 15, color: G.t2 }}>{getPayLabel(pid)}</span><span style={{ fontSize: 15, fontWeight: 700 }}>{formatINR(amt)}</span></div>
+                ))}
               </div>
 
               <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
@@ -1008,7 +1325,7 @@ td.t2 { color: #666; white-space: nowrap; }
           >
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: -1, marginBottom: 16 }}>{formatINR(detMod.amount)}</div>
-            {[["Category", getCL(detMod)], ["Payment", detMod.payMode === "cash" ? "Cash" : "Bank"], ["Note", detMod.note || "\u2014"], ["Date", tfd(detMod.date)], ["Time", tts(detMod.date)]].map(([l, v]) => (
+            {[["Category", getCL(detMod)], ["Payment", getPayLabel(detMod.payMode)], ["Note", detMod.note || "\u2014"], ["Date", tfd(detMod.date)], ["Time", tts(detMod.date)]].map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", padding: "11px 0", borderBottom: `1px solid ${G.lt}`, fontSize: 16 }}>
                 <span style={{ color: G.t3, fontWeight: 500 }}>{l}</span><span style={{ color: G.t1, fontWeight: 600, textAlign: "right", maxWidth: "60%" }}>{v}</span>
               </div>
@@ -1037,39 +1354,139 @@ td.t2 { color: #666; white-space: nowrap; }
       {/* ══════ KEY MODAL ══════ */}
       {keyMod && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setKeyMod(false)}>
-          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px" }} onClick={e => e.stopPropagation()}>
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
-            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Shortcut API Key</div>
-            <div style={{ fontSize: 14, color: G.t3, marginBottom: 20, lineHeight: 1.5 }}>
-              Generate a key and enter it once in the iPhone Shortcut. Anyone with this key can log expenses to your account — keep it private.
+          <div
+            onTouchStart={e => { mRef.current.ky = e.touches[0].clientY; }}
+            onTouchEnd={e => { if (e.changedTouches[0].clientY - mRef.current.ky > 80) setKeyMod(false); }}
+            style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div style={{ width: 30 }} />
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt }} />
+              <button onClick={() => setKeyMod(false)} style={{ background: "none", border: "none", fontSize: 20, color: G.t3, cursor: "pointer", padding: "2px 6px", lineHeight: 1 }}>{"\u2715"}</button>
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6 }}>SMS Automation</div>
+            <div style={{ fontSize: 14, color: G.t3, marginBottom: 16, lineHeight: 1.5 }}>
+              Auto-log bank SMS as expenses. Generate your API key, then follow the setup for your phone.
             </div>
 
+            {/* API Key Section */}
             {userKey ? (
               <>
-                <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 12, gap: 12 }}>
-                  <span style={{ fontFamily: "monospace", fontSize: 24, fontWeight: 800, letterSpacing: 4, flex: 1, color: G.t1 }}>{userKey}</span>
-                  <button onClick={copyKey} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 14, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Copy</button>
+                <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 4 }}>Your Key</div>
+                    <span style={{ fontFamily: "monospace", fontSize: 22, fontWeight: 800, letterSpacing: 3, color: G.t1 }}>{userKey}</span>
+                  </div>
+                  <button onClick={copyKey} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", flexShrink: 0, marginLeft: "auto" }}>Copy</button>
                 </div>
+                <div style={{ fontSize: 12, color: G.t3, marginBottom: 8, lineHeight: 1.4 }}>Copy this key and paste it when the shortcuts below ask for it on first run.</div>
                 <button onClick={handleGenerateKey} disabled={keyLoading}
-                  style={{ width: "100%", padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>
-                  {keyLoading ? "Generating…" : "Regenerate Key"}
+                  style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1.5px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>
+                  {keyLoading ? "Generating\u2026" : "Regenerate Key"}
                 </button>
-                <div style={{ fontSize: 12, color: G.tm, textAlign: "center", marginBottom: 16 }}>Regenerating will break the old Shortcut — update the key value in Shortcuts too.</div>
               </>
             ) : (
               <button onClick={handleGenerateKey} disabled={keyLoading}
                 style={{ width: "100%", padding: "16px", borderRadius: 14, border: "none", background: G.bk, color: G.wh, fontSize: 17, fontWeight: 700, cursor: "pointer", marginBottom: 16 }}>
-                {keyLoading ? "Generating…" : "Generate Key"}
+                {keyLoading ? "Generating\u2026" : "Generate Key"}
               </button>
             )}
 
-            <div style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", fontSize: 13, color: G.t2, lineHeight: 1.7 }}>
-              <div style={{ fontWeight: 700, marginBottom: 4, fontSize: 13 }}>Setup steps</div>
-              <div>1. Tap <b>Generate Key</b> and copy the key</div>
-              <div>2. Open <b>Shortcuts → My Shortcuts</b></div>
-              <div>3. Edit your bank SMS shortcut</div>
-              <div>4. Set the <b>key</b> field to your copied key</div>
-              <div>5. Done — bank SMS will auto-log expenses</div>
+            {/* Platform Tabs */}
+            <div style={{ display: "flex", background: G.bg2, borderRadius: 10, padding: 3, marginBottom: 16 }}>
+              {[["ios", "iPhone"], ["android", "Android"]].map(([id, label]) => (
+                <button key={id} onClick={() => setSetupTab(id)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, background: setupTab === id ? G.bk : "transparent", color: setupTab === id ? G.wh : G.t3 }}>{label}</button>
+              ))}
+            </div>
+
+            {/* iPhone Setup */}
+            {setupTab === "ios" && (
+              <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>iPhone Shortcuts Setup</div>
+
+                <div style={{ marginBottom: 14 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add Shortcuts</div>
+                  <div style={{ marginBottom: 6 }}>Add both shortcuts to your iPhone. Each asks for your API key on first run — paste it from above.</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                    <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                      Log Expense {"\u2192"}
+                    </a>
+                    <a href={CASH_SHORTCUT_URL} target="_blank" rel="noopener noreferrer"
+                      style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                      Cash Expense {"\u2192"}
+                    </a>
+                  </div>
+                  <div style={{ fontSize: 12, color: G.t3, marginTop: 4 }}><b>Log Expense</b> — auto-logs bank SMS. <b>Cash Expense</b> — manually add cash spending with amount, category & note.</div>
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Create Automation</div>
+                  <div>Open <b>Shortcuts</b> app {"\u2192"} <b>Automation</b> tab {"\u2192"} <b>+</b></div>
+                  <div>Select <b>Message</b> trigger</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
+                    <div><b>Sender contains:</b> <span style={{ color: G.t3 }}>(leave blank)</span></div>
+                    <div><b>Message contains:</b> your bank name (e.g. "Kotak Bank")</div>
+                  </div>
+                  <div style={{ marginTop: 6 }}>Set the action:</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 4, fontSize: 12, lineHeight: 1.7 }}>
+                    <div><b>Run Shortcut</b> {"\u2192"} select "Log Expense"</div>
+                    <div><b>Input:</b> Message (the SMS body)</div>
+                  </div>
+                  <div style={{ marginTop: 6 }}>Turn off <b>"Ask Before Running"</b></div>
+                </div>
+
+                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
+                  Tip: For multiple banks, create one automation per bank. They all use the same "Log Expense" shortcut. The system auto-identifies which bank sent the SMS.
+                </div>
+              </div>
+            )}
+
+            {/* Android Setup */}
+            {setupTab === "android" && (
+              <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
+                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Android Setup (MacroDroid)</div>
+
+                <a href="https://play.google.com/store/apps/details?id=com.arlosoft.macrodroid" target="_blank" rel="noopener noreferrer"
+                  style={{ display: "block", padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 14, fontWeight: 700, textAlign: "center", textDecoration: "none", marginBottom: 12, cursor: "pointer" }}>
+                  Get MacroDroid (Free) {"\u2192"}
+                </a>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Setup Steps</div>
+                  <div>1. Install <b>MacroDroid</b> from Play Store</div>
+                  <div>2. Tap <b>Add Macro</b> {"\u2192"} <b>Trigger</b> {"\u2192"} <b>SMS Received</b></div>
+                  <div>3. Set sender filter to your bank (e.g. "HDFCBK")</div>
+                  <div>4. Optionally add content filter: "debited"</div>
+                  <div>5. <b>Action</b> {"\u2192"} <b>HTTP Request</b></div>
+                </div>
+
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>HTTP Request Settings</div>
+                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.7 }}>
+                    <div><b>Method:</b> POST</div>
+                    <div><b>URL:</b> <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/log-sms</span></div>
+                    <div><b>Content-Type:</b> application/json</div>
+                    <div><b>Body:</b></div>
+                    <div style={{ fontFamily: "monospace", fontSize: 11, background: G.bg2, padding: "8px", borderRadius: 6, marginTop: 4, wordBreak: "break-all" }}>
+                      {`{"sms":"[sms_body]","key":"${userKey || "YOUR_KEY"}","category":"personal"}`}
+                    </div>
+                    <div style={{ fontSize: 11, color: G.t3, marginTop: 4 }}>[sms_body] is a MacroDroid built-in variable for SMS text.</div>
+                  </div>
+                </div>
+
+                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
+                  Note: MacroDroid free tier allows 5 macros. You only need 1 for this. For category selection, use "personal" as default — or set up a Tasker/MacroDroid popup to pick before sending.
+                </div>
+              </div>
+            )}
+
+            {/* API Endpoint */}
+            <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 10, padding: "10px 14px", marginTop: 14, gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase" }}>API Endpoint</div>
+                <div style={{ fontFamily: "monospace", fontSize: 11, color: G.t2, marginTop: 2, wordBreak: "break-all" }}>{API_BASE}/api/log-sms</div>
+              </div>
+              <button onClick={() => copyText(`${API_BASE}/api/log-sms`)} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Copy</button>
             </div>
           </div>
         </div>
@@ -1077,64 +1494,183 @@ td.t2 { color: #666; white-space: nowrap; }
 
       {/* ══════ CATEGORY EDIT MODAL ══════ */}
       {catMod && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setCatMod(false); setDragIdx(null); }}>
-          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setCatMod(false)}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-              <div style={{ fontSize: 20, fontWeight: 800 }}>Manage Categories</div>
-              <button onClick={switchToNewDefaults} title="Switch to new default categories" style={{ fontSize: 12, fontWeight: 600, color: G.t3, background: G.bg2, border: `1px solid ${G.bdr}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}>✦ New defaults</button>
-            </div>
-            <div style={{ fontSize: 13, color: G.t3, marginBottom: 16 }}>Tap ≡ to pick a category, then tap ≡ on another to drop it there. Existing entries are unaffected.</div>
-
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Customise Categories</div>
+            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels, icons, hide or add new categories.</div>
             {editCats.map((c, i) => {
-              const locked = c.id === "investment";
-              const isPicked = dragIdx === i;
-              const isTarget = dragIdx !== null && dragIdx !== i;
+              const isDef = DEFAULT_CATEGORIES.some(d => d.id === c.id);
               return (
-                <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, borderRadius: 10, background: isPicked ? "#E8F4FF" : isTarget ? G.bg2 : "transparent", border: isPicked ? "2px dashed #4A90D9" : "2px solid transparent", transition: "background .15s" }}>
-                  {/* Drag handle */}
-                  <button
-                    onClick={() => {
-                      if (dragIdx === null) { setDragIdx(i); }
-                      else if (dragIdx === i) { setDragIdx(null); }
-                      else { moveCat(dragIdx, i); }
-                    }}
-                    title={dragIdx === null ? "Tap to pick up" : dragIdx === i ? "Tap to cancel" : "Tap to place here"}
-                    style={{ background: isPicked ? "#4A90D9" : G.bg3, border: "none", borderRadius: 8, padding: "10px 8px", cursor: "pointer", fontSize: 14, color: isPicked ? "#fff" : G.t3, flexShrink: 0, lineHeight: 1 }}
-                  >≡</button>
-                  {/* Icon input */}
-                  {locked ? (
-                    <div style={{ width: 42, padding: "9px 0", borderRadius: 10, border: `2px solid ${G.lt}`, fontSize: 20, textAlign: "center", background: G.bg3, color: G.t3, boxSizing: "border-box", flexShrink: 0 }}>{c.icon}</div>
-                  ) : (
-                    <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 42, padding: "9px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 20, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
-                  )}
-                  {/* Label input */}
-                  {locked ? (
-                    <div style={{ flex: 1, padding: "9px 12px", borderRadius: 10, border: `2px solid ${G.lt}`, fontSize: 15, background: G.bg3, color: G.t3, boxSizing: "border-box", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span>{c.label}</span>
-                      <span style={{ fontSize: 10, color: G.tm, fontWeight: 600, letterSpacing: 0.3 }}>locked</span>
-                    </div>
-                  ) : (
-                    <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={20} placeholder="Category name" style={{ flex: 1, padding: "9px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
-                  )}
-                  {/* Delete button — not for investment */}
-                  {!locked && (
-                    <button onClick={() => { setEditCats(p => p.filter((_, j) => j !== i)); if (dragIdx === i) setDragIdx(null); }} title="Delete category" style={{ background: "none", border: "none", fontSize: 18, color: G.t3, cursor: "pointer", padding: "8px 4px", flexShrink: 0, lineHeight: 1 }}>{"\u2715"}</button>
-                  )}
+              <div key={c.id}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: c.id === "investment" ? 4 : 10, opacity: c.hidden ? 0.45 : 1 }}>
+                  <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 40, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 20, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
+                  <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={isDef ? DEFAULT_CATEGORIES.find(d => d.id === c.id).label : "Category name"} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                  <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 15, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "○" : "●"}</button>
+                  {!isDef && <button onClick={() => setEditCats(p => p.filter((_, j) => j !== i))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title="Remove">{"\u2715"}</button>}
                 </div>
-              );
+                {c.id === "investment" && <div style={{ fontSize: 11, color: "#E08700", marginBottom: 10, marginLeft: 46, lineHeight: 1.3 }}>This category tracks savings & investments. Name it accordingly.</div>}
+              </div>);
             })}
+            {editCats.length < 8 && (
+              <button onClick={() => setEditCats(p => [...p, { id: "custom_" + Date.now().toString(36), label: "", icon: "📌", hidden: false }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Category</button>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button onClick={() => setEditCats(DEFAULT_CATEGORIES.map(c => ({ ...c })))} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Reset</button>
+              <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
 
-            {/* Add new category row */}
-            <div style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "center" }}>
-              <input type="text" value={newCatIcon} onChange={e => setNewCatIcon(e.target.value)} maxLength={2} placeholder="📦" style={{ width: 42, padding: "9px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 20, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
-              <input type="text" value={newCatLabel} onChange={e => setNewCatLabel(e.target.value)} maxLength={20} placeholder="New category name…" onKeyDown={e => { if (e.key === "Enter") addNewCat(); }} style={{ flex: 1, padding: "9px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box" }} />
-              <button onClick={addNewCat} style={{ padding: "9px 14px", borderRadius: 10, border: "none", background: newCatLabel.trim() ? G.bk : G.bg3, color: newCatLabel.trim() ? G.wh : G.tm, fontSize: 14, fontWeight: 700, cursor: newCatLabel.trim() ? "pointer" : "default", flexShrink: 0 }}>+ Add</button>
+      {/* ══════ BANK EDIT MODAL ══════ */}
+      {bankMod && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setBankMod(false)}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Banks & Cards</div>
+            <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Add your banks and cards. These appear as payment options when logging expenses.</div>
+            {editBanks.map((b, i) => (
+              <div key={b.id} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                <input type="text" value={b.label} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} placeholder="e.g. HDFC, Kotak" maxLength={20} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                <select value={b.type} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, type: e.target.value } : x))} style={{ padding: "10px 8px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 13, color: G.t2, background: G.bg2, outline: "none" }}>
+                  <option value="bank">Account</option>
+                  <option value="credit_card">Card</option>
+                </select>
+                <input type="text" value={b.last4 || ""} onChange={e => setEditBanks(p => p.map((x, j) => j === i ? { ...x, last4: e.target.value.replace(/[^0-9]/g, "") } : x))} placeholder="Last 4" maxLength={4} style={{ width: 56, padding: "10px 8px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 13, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", textAlign: "center" }} />
+                <button onClick={() => setEditBanks(p => p.filter((_, j) => j !== i))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{"\u2715"}</button>
+              </div>
+            ))}
+            {editBanks.length < 10 && (
+              <button onClick={() => setEditBanks(p => [...p, { id: "bnk_" + Date.now().toString(36), label: "", type: "bank", last4: "" }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Bank / Card</button>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button onClick={() => setBankMod(false)} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+              <button onClick={saveBanks} disabled={bankSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{bankSaving ? "Saving\u2026" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════ PROFILE MODAL ══════ */}
+      {profileMod && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setProfileMod(false); setDelConfirm(false); }}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+              <div style={{ width: 30 }} />
+              <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt }} />
+              <button onClick={() => { setProfileMod(false); setDelConfirm(false); }} style={{ background: "none", border: "none", fontSize: 20, color: G.t3, cursor: "pointer", padding: "2px 6px", lineHeight: 1 }}>{"\u2715"}</button>
+            </div>
+            <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 20 }}>Profile</div>
+
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Email</div>
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: G.bg2, fontSize: 15, color: G.t2 }}>{session?.user?.email || "—"}</div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-              <button onClick={() => { setEditCats(OLD_DEFAULT_CATEGORIES.map(c => ({ ...c }))); setDragIdx(null); }} style={{ padding: "12px 14px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Reset</button>
-              <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 6 }}>Display Name</div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <input type="text" value={profileName} onChange={e => setProfileName(e.target.value)} placeholder="Your name" maxLength={40} style={{ flex: 1, padding: "12px 14px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                <button onClick={async () => {
+                  setProfileSaving(true);
+                  const { error } = await supabase.auth.updateUser({ data: { full_name: profileName.trim() } });
+                  setProfileSaving(false);
+                  if (error) sToast("Error saving", "err"); else sToast("Name saved");
+                }} disabled={profileSaving} style={{ padding: "12px 16px", borderRadius: 10, border: "none", background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>{profileSaving ? "…" : "Save"}</button>
+              </div>
+              <div style={{ fontSize: 11, color: G.t3, marginTop: 4 }}>Used in exported reports.</div>
+            </div>
+
+            <div style={{ borderTop: `1px solid ${G.lt}`, paddingTop: 16, marginBottom: 16 }}>
+              <button onClick={async () => {
+                const email = session?.user?.email;
+                if (!email) return;
+                const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: "https://expenses.gurjarbooks.com" });
+                if (error) sToast("Error", "err"); else sToast("Reset link sent to email");
+              }} style={{ width: "100%", padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 10 }}>Change Password</button>
+
+              <button onClick={signOut} style={{ width: "100%", padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Sign Out</button>
+            </div>
+
+            <div style={{ borderTop: `1px solid ${G.lt}`, paddingTop: 16 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#CC0000", letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>Danger Zone</div>
+              {!delConfirm ? (
+                <button onClick={() => setDelConfirm(true)} style={{ width: "100%", padding: "13px", borderRadius: 12, border: "2px solid #FFCCCC", background: "#FFF5F5", color: "#CC0000", fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Delete Account</button>
+              ) : (
+                <div>
+                  <div style={{ fontSize: 13, color: "#CC0000", marginBottom: 10, lineHeight: 1.5 }}>This will permanently delete your account and all data (expenses, trips, categories). This cannot be undone.</div>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setDelConfirm(false)} style={{ flex: 1, padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                    <button onClick={async () => {
+                      setDeleting(true);
+                      try {
+                        const { data: { session: s } } = await supabase.auth.getSession();
+                        const res = await fetch(`${API_BASE}/api/delete-account`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ access_token: s?.access_token }) });
+                        const json = await res.json();
+                        if (json.ok) { sToast("Account deleted"); await supabase.auth.signOut(); }
+                        else sToast(json.error || "Error", "err");
+                      } catch { sToast("Error deleting", "err"); }
+                      setDeleting(false);
+                    }} disabled={deleting} style={{ flex: 1, padding: "13px", borderRadius: 12, border: "none", background: "#CC0000", color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>{deleting ? "Deleting…" : "Yes, Delete Everything"}</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════ ONBOARDING GUIDE ══════ */}
+      {onboardStep !== null && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 10000, display: "flex", alignItems: "flex-end", justifyContent: "center" }} onClick={dismissOnboard}>
+          <div onClick={e => e.stopPropagation()} style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 22px env(safe-area-inset-bottom, 20px)", maxHeight: "80dvh", overflowY: "auto" }}>
+            {/* Progress dots */}
+            <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 18 }}>
+              {[0, 1, 2].map(i => <div key={i} style={{ width: i === onboardStep ? 24 : 8, height: 8, borderRadius: 4, background: i === onboardStep ? G.bk : G.bg3, transition: "all .2s" }} />)}
+            </div>
+
+            {onboardStep === 0 && <>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Welcome to GurjarBooks!</div>
+              <div style={{ fontSize: 14, color: G.t2, lineHeight: 1.6, marginBottom: 20 }}>Let's get you set up in under a minute. You can always change these later.</div>
+              <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>1. Customise Categories</div>
+                <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>You start with Personal, Work, Home & Savings. Add your own categories or hide ones you don't need.</div>
+                <button onClick={() => { setCatMod(true); setEditCats(cats.map(c => ({ ...c }))); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Edit Categories</button>
+              </div>
+            </>}
+
+            {onboardStep === 1 && <>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Add Your Banks</div>
+              <div style={{ fontSize: 14, color: G.t2, lineHeight: 1.6, marginBottom: 20 }}>Add your bank accounts and cards so expenses are tagged to the right source. If you skip this, banks will be auto-created from SMS data later.</div>
+              <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>2. Banks & Cards</div>
+                <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>Add your bank accounts (HDFC, SBI, etc.) and credit cards. Include the last 4 digits for automatic SMS matching.</div>
+                <button onClick={() => { setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
+              </div>
+            </>}
+
+            {onboardStep === 2 && <>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Auto-Track via SMS</div>
+              <div style={{ fontSize: 14, color: G.t2, lineHeight: 1.6, marginBottom: 20 }}>Set up an iPhone Shortcut to automatically log expenses from bank SMS messages. This is optional — you can always add expenses manually.</div>
+              <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>3. iPhone Shortcut</div>
+                <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>Get your API key from the key icon (top right), then download the shortcut and set up a message automation for your bank.</div>
+                <button onClick={() => { dismissOnboard(); setKeyMod(true); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Set Up Key & Shortcut</button>
+              </div>
+            </>}
+
+            {/* Navigation */}
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              {onboardStep > 0 && (
+                <button onClick={() => setOnboardStep(s => s - 1)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Back</button>
+              )}
+              <button onClick={dismissOnboard} style={{ flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Skip</button>
+              {onboardStep < 2 ? (
+                <button onClick={() => setOnboardStep(s => s + 1)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Next</button>
+              ) : (
+                <button onClick={dismissOnboard} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Done</button>
+              )}
             </div>
           </div>
         </div>
