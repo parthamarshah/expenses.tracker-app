@@ -153,16 +153,15 @@ export default function ExpenseTracker() {
         try {
           const saved = JSON.parse(prefsRow.cats_json);
           if (Array.isArray(saved) && saved.length > 0) {
-            // Merge: preserve user's saved cats (with any custom additions), fill in missing defaults
-            const defIds = DEFAULT_CATEGORIES.map(d => d.id);
-            const merged = [];
-            DEFAULT_CATEGORIES.forEach(def => {
-              const s = saved.find(x => x.id === def.id);
-              merged.push(s ? { ...def, label: s.label || def.label, icon: s.icon || def.icon, hidden: !!s.hidden } : def);
+            // Preserve user's saved order as source of truth
+            const savedIds = new Set(saved.map(s => s.id));
+            const merged = saved.map(s => {
+              const def = DEFAULT_CATEGORIES.find(d => d.id === s.id);
+              return { id: s.id, label: s.label || (def ? def.label : "Custom"), icon: s.icon || (def ? def.icon : "📌"), hidden: !!s.hidden };
             });
-            // Add custom categories (non-default IDs)
-            saved.filter(s => !defIds.includes(s.id)).forEach(s => {
-              merged.push({ id: s.id, label: s.label || "Custom", icon: s.icon || "📌", hidden: !!s.hidden });
+            // Append any missing defaults at end (e.g. new default added after user saved)
+            DEFAULT_CATEGORIES.forEach(def => {
+              if (!savedIds.has(def.id)) merged.push(def);
             });
             setCats(merged);
           }
