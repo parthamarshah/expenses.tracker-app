@@ -202,8 +202,10 @@ export default function ExpenseTracker() {
     return () => { expsChannel?.unsubscribe(); tripsChannel?.unsubscribe(); };
   }, [userId]);
 
+  const onboardReturn = useRef(null); // step to return to after modal closes
   const dismissOnboard = useCallback(() => {
     setOnboardStep(null);
+    onboardReturn.current = null;
     try { localStorage.setItem(`onboarded_${userId}`, "1"); } catch {}
   }, [userId]);
 
@@ -551,6 +553,7 @@ td.t2 { color: #666; white-space: nowrap; }
     });
     setCats(cleaned);
     setCatMod(false);
+    if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; }
     const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(cleaned) });
     setCatSaving(false);
     if (error) sToast("Sync error", "err");
@@ -590,6 +593,7 @@ td.t2 { color: #666; white-space: nowrap; }
     }));
     setBanks(cleaned);
     setBankMod(false);
+    if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; }
     const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, banks_json: JSON.stringify(cleaned) });
     setBankSaving(false);
     if (error) sToast("Sync error", "err");
@@ -1364,20 +1368,25 @@ td.t2 { color: #666; white-space: nowrap; }
 
       {/* ══════ CATEGORY EDIT MODAL ══════ */}
       {catMod && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setCatMod(false)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setCatMod(false); if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; } }}>
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Customise Categories</div>
             <div style={{ fontSize: 13, color: G.t3, marginBottom: 20 }}>Change labels, icons, hide or add new categories.</div>
             {editCats.map((c, i) => {
-              const isDef = DEFAULT_CATEGORIES.some(d => d.id === c.id);
+              const isProtected = c.id === "investment"; // only savings is protected
               return (
               <div key={c.id}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: c.id === "investment" ? 4 : 10, opacity: c.hidden ? 0.45 : 1 }}>
+                  {/* Reorder arrows */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2, flexShrink: 0 }}>
+                    <button onClick={() => { if (i > 0) setEditCats(p => { const a = [...p]; [a[i-1], a[i]] = [a[i], a[i-1]]; return a; }); }} disabled={i === 0} style={{ background: "none", border: "none", cursor: i > 0 ? "pointer" : "default", fontSize: 14, color: i > 0 ? G.t2 : G.bg3, padding: 0, lineHeight: 1 }}>{"\u25B2"}</button>
+                    <button onClick={() => { if (i < editCats.length - 1) setEditCats(p => { const a = [...p]; [a[i], a[i+1]] = [a[i+1], a[i]]; return a; }); }} disabled={i === editCats.length - 1} style={{ background: "none", border: "none", cursor: i < editCats.length - 1 ? "pointer" : "default", fontSize: 14, color: i < editCats.length - 1 ? G.t2 : G.bg3, padding: 0, lineHeight: 1 }}>{"\u25BC"}</button>
+                  </div>
                   <input type="text" value={c.icon} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, icon: e.target.value } : x))} maxLength={2} style={{ width: 40, padding: "10px 0", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 20, outline: "none", textAlign: "center", background: G.bg2, color: G.t1, boxSizing: "border-box", flexShrink: 0 }} />
-                  <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder={isDef ? DEFAULT_CATEGORIES.find(d => d.id === c.id).label : "Category name"} style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
-                  <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 15, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "○" : "●"}</button>
-                  {!isDef && <button onClick={() => setEditCats(p => p.filter((_, j) => j !== i))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title="Remove">{"\u2715"}</button>}
+                  <input type="text" value={c.label} onChange={e => setEditCats(p => p.map((x, j) => j === i ? { ...x, label: e.target.value } : x))} maxLength={14} placeholder="Category name" style={{ flex: 1, padding: "10px 12px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, outline: "none", background: G.bg2, color: G.t1, boxSizing: "border-box", minWidth: 0 }} />
+                  <button onClick={() => setEditCats(p => p.map((x, j) => j === i ? { ...x, hidden: !x.hidden } : x))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${c.hidden ? G.lt : G.bdr}`, background: c.hidden ? G.bg3 : G.bg, color: c.hidden ? G.tm : G.t2, fontSize: 15, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title={c.hidden ? "Show" : "Hide"}>{c.hidden ? "\u25CB" : "\u25CF"}</button>
+                  {!isProtected && <button onClick={() => setEditCats(p => p.filter((_, j) => j !== i))} style={{ width: 36, height: 36, borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: "#FF3B30", fontSize: 16, cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }} title="Remove">{"\u2715"}</button>}
                 </div>
                 {c.id === "investment" && <div style={{ fontSize: 11, color: "#E08700", marginBottom: 10, marginLeft: 46, lineHeight: 1.3 }}>This category tracks savings & investments. Name it accordingly.</div>}
               </div>);
@@ -1395,7 +1404,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
       {/* ══════ BANK EDIT MODAL ══════ */}
       {bankMod && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setBankMod(false)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setBankMod(false); if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; } }}>
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Banks & Cards</div>
@@ -1501,12 +1510,12 @@ td.t2 { color: #666; white-space: nowrap; }
             </div>
 
             {onboardStep === 0 && <>
-              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Welcome to GurjarBooks!</div>
+              <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 6 }}>Welcome to Expense Tracker!</div>
               <div style={{ fontSize: 14, color: G.t2, lineHeight: 1.6, marginBottom: 20 }}>Let's get you set up in under a minute. You can always change these later.</div>
               <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>1. Customise Categories</div>
                 <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>You start with Personal, Work, Home & Savings. Add your own categories or hide ones you don't need.</div>
-                <button onClick={() => { setCatMod(true); setEditCats(cats.map(c => ({ ...c }))); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Edit Categories</button>
+                <button onClick={() => { onboardReturn.current = 1; setOnboardStep(null); setCatMod(true); setEditCats(cats.map(c => ({ ...c }))); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Edit Categories</button>
               </div>
             </>}
 
@@ -1516,7 +1525,7 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>2. Banks & Cards</div>
                 <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>Add your bank accounts (HDFC, SBI, etc.) and credit cards. Include the last 4 digits for automatic SMS matching.</div>
-                <button onClick={() => { setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
+                <button onClick={() => { onboardReturn.current = 2; setOnboardStep(null); setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
               </div>
             </>}
 
