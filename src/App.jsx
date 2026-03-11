@@ -213,7 +213,8 @@ export default function ExpenseTracker() {
     return () => { cancelled = true; expsChannel?.unsubscribe(); tripsChannel?.unsubscribe(); };
   }, [userId]);
 
-  const onboardReturn = useRef(null); // step to return to after modal closes
+  const onboardReturn = useRef(null); // step to return to after modal closes (current step)
+  const onboardAdvance = useRef(null); // step to advance to after modal SAVE
   const dismissOnboard = useCallback(() => {
     setOnboardStep(null);
     onboardReturn.current = null;
@@ -570,7 +571,7 @@ td.t2 { color: #666; white-space: nowrap; }
     });
     setCats(cleaned);
     setCatMod(false);
-    if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; }
+    if (onboardAdvance.current !== null) { setOnboardStep(onboardAdvance.current); onboardReturn.current = null; onboardAdvance.current = null; }
     const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, cats_json: JSON.stringify(cleaned) });
     setCatSaving(false);
     if (error) sToast("Sync error", "err");
@@ -610,7 +611,7 @@ td.t2 { color: #666; white-space: nowrap; }
     }));
     setBanks(cleaned);
     setBankMod(false);
-    if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; }
+    if (onboardAdvance.current !== null) { setOnboardStep(onboardAdvance.current); onboardReturn.current = null; onboardAdvance.current = null; }
     const { error } = await supabase.from("user_prefs").upsert({ user_id: userId, banks_json: JSON.stringify(cleaned) });
     setBankSaving(false);
     if (error) sToast("Sync error", "err");
@@ -1385,7 +1386,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
       {/* ══════ CATEGORY EDIT MODAL ══════ */}
       {catMod && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setCatMod(false); if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; } }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setCatMod(false); if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; onboardAdvance.current = null; } }}>
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Customise Categories</div>
@@ -1421,7 +1422,7 @@ td.t2 { color: #666; white-space: nowrap; }
 
       {/* ══════ BANK EDIT MODAL ══════ */}
       {bankMod && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setBankMod(false); if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; } }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setBankMod(false); if (onboardReturn.current !== null) { setOnboardStep(onboardReturn.current); onboardReturn.current = null; onboardAdvance.current = null; } }}>
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "80vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 18px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>Banks & Cards</div>
@@ -1532,7 +1533,7 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>1. Customise Categories</div>
                 <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>You start with Personal, Work, Home & Savings. Add your own categories or hide ones you don't need.</div>
-                <button onClick={() => { onboardReturn.current = 1; setOnboardStep(null); setCatMod(true); setEditCats(cats.map(c => ({ ...c }))); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Edit Categories</button>
+                <button onClick={() => { onboardReturn.current = 0; onboardAdvance.current = 1; setOnboardStep(null); setCatMod(true); setEditCats(cats.map(c => ({ ...c }))); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Edit Categories</button>
               </div>
             </>}
 
@@ -1542,7 +1543,7 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>2. Banks & Cards</div>
                 <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>Add your bank accounts (HDFC, SBI, etc.) and credit cards. Include the last 4 digits for automatic SMS matching.</div>
-                <button onClick={() => { onboardReturn.current = 2; setOnboardStep(null); setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
+                <button onClick={() => { onboardReturn.current = 1; onboardAdvance.current = 2; setOnboardStep(null); setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
               </div>
             </>}
 
