@@ -1,11 +1,15 @@
 // Cloudflare Pages Function: /api/delete-account
 import { createClient } from "@supabase/supabase-js";
 
+const ALLOWED_ORIGIN = "https://expenses.gurjarbooks.com";
+
 export async function onRequestPost(context) {
   const { env, request } = context;
+  const origin = request.headers.get("Origin") || "";
+  const corsOrigin = origin === ALLOWED_ORIGIN ? ALLOWED_ORIGIN : ALLOWED_ORIGIN;
   const cors = {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Origin": corsOrigin,
   };
 
   let body;
@@ -30,15 +34,20 @@ export async function onRequestPost(context) {
 
   const userId = user.id;
 
-  // Delete all user data
-  await Promise.all([
+  // Delete all user data — check for errors
+  const results = await Promise.all([
     supabase.from("expenses").delete().eq("user_id", userId),
     supabase.from("trips").delete().eq("user_id", userId),
     supabase.from("user_prefs").delete().eq("user_id", userId),
     supabase.from("user_keys").delete().eq("user_id", userId),
   ]);
 
-  // Delete auth account
+  const dataErrors = results.filter(r => r.error);
+  if (dataErrors.length > 0) {
+    return new Response(JSON.stringify({ ok: false, error: "Failed to delete some data, account preserved" }), { status: 500, headers: cors });
+  }
+
+  // Delete auth account (only after all data successfully deleted)
   const { error: delError } = await supabase.auth.admin.deleteUser(userId);
   if (delError) {
     return new Response(JSON.stringify({ ok: false, error: delError.message }), { status: 500, headers: cors });
@@ -50,7 +59,7 @@ export async function onRequestPost(context) {
 export async function onRequestOptions() {
   return new Response(null, {
     headers: {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     },

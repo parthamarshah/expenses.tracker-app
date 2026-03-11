@@ -125,9 +125,19 @@ export default function ExpenseTracker() {
   const mRef = useRef({}); // modal swipe-down tracking
   const lastTouchTime = useRef(0); // desktop click detection
 
+  // ── Reset UI state on sign-out / sign-in / account switch ────────────────
+  useEffect(() => {
+    setProfileMod(false); setKeyMod(false); setCatMod(false); setBankMod(false);
+    setTripMod(false); setDetMod(null); setOnboardStep(null); setDelConfirm(false);
+    setView("list"); setDbReady(false); setExps([]); setTrips([]); setBanks([]);
+    setCats(OLD_DEFAULT_CATEGORIES); setUserKey(null); setEditId(null);
+    setAmt(""); setNote(""); setCat("personal"); setPay("cash");
+  }, [userId]);
+
   // ── Load data + realtime ──────────────────────────────────────────────────
   useEffect(() => {
     if (!userId) return;
+    let cancelled = false;
     let expsChannel, tripsChannel;
 
     const init = async () => {
@@ -136,6 +146,7 @@ export default function ExpenseTracker() {
         supabase.from("trips").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
         supabase.from("user_prefs").select("cats_json, banks_json").eq("user_id", userId).maybeSingle(),
       ]);
+      if (cancelled) return; // userId changed while fetching
       setExps((expRows  || []).map(dbToExp));
       setTrips((tripRows || []).map(dbToTrip));
       if (prefsRow?.cats_json) {
@@ -179,6 +190,7 @@ export default function ExpenseTracker() {
         try { if (!localStorage.getItem(`onboarded_${userId}`)) setOnboardStep(0); } catch {}
       }
 
+      if (cancelled) return;
       expsChannel = supabase.channel(`exp:${userId}`)
         .on("postgres_changes",
           { event: "*", schema: "public", table: "expenses", filter: `user_id=eq.${userId}` },
@@ -199,7 +211,7 @@ export default function ExpenseTracker() {
     };
 
     init();
-    return () => { expsChannel?.unsubscribe(); tripsChannel?.unsubscribe(); };
+    return () => { cancelled = true; expsChannel?.unsubscribe(); tripsChannel?.unsubscribe(); };
   }, [userId]);
 
   const onboardReturn = useRef(null); // step to return to after modal closes
@@ -302,9 +314,13 @@ export default function ExpenseTracker() {
   }, [sToast]);
 
   // ── CRUD — all optimistic ─────────────────────────────────────────────────
+  const savingRef = useRef(false);
   const doSave = useCallback(async () => {
+    if (savingRef.current) return; // prevent double-submit
     const v = Math.round(Number(amt));
     if (!v || v <= 0) { sToast("Enter amount", "err"); return; }
+    savingRef.current = true;
+    setTimeout(() => { savingRef.current = false; }, 600);
     hap();
     const tid = cat.startsWith("trip_") ? cat.replace("trip_", "") : null;
     if (editId) {
@@ -373,10 +389,12 @@ export default function ExpenseTracker() {
     setTrips(p => p.map(x => x.id === t.id ? { ...x, archived: true } : x));
     setExps(p => p.map(e => e.tripId === t.id ? { ...e, tripId: null, category: "personal" } : e));
     setConfDel(null); setTripDet(null); sToast("Trip deleted");
-    supabase.from("trips").update({ archived: true }).eq("id", t.id)
-      .then(({ error }) => { if (error) sToast("Sync error", "err"); });
-    supabase.from("expenses").update({ trip_id: null, category: "personal" }).eq("trip_id", t.id)
-      .then(({ error }) => { if (error) sToast("Sync error", "err"); });
+    Promise.all([
+      supabase.from("trips").update({ archived: true }).eq("id", t.id),
+      supabase.from("expenses").update({ trip_id: null, category: "personal" }).eq("trip_id", t.id),
+    ]).then(results => {
+      if (results.some(r => r.error)) sToast("Sync error", "err");
+    });
   }, [canDelTrip, sToast]);
 
   const pinT = useCallback((id) => {
@@ -1012,7 +1030,7 @@ td.t2 { color: #666; white-space: nowrap; }
                 const d = frac >= 0.999
                   ? `M 50 5 A 45 45 0 1 1 49.99 5 Z`
                   : `M 50 50 L ${x1} ${y1} A 45 45 0 ${largeArc} 1 ${x2} ${y2} Z`;
-                return { cid, d, color: PIE_COLORS[i % PIE_COLORS.length], label: (allCats.find(x => x.id === cid) || cats[0]).label, pct: Math.round(frac * 100) };
+                return { cid, d, color: PIE_COLORS[i % PIE_COLORS.length], label: (allCats.find(x => x.id === cid) || cats[0] || { label: "Other" }).label, pct: Math.round(frac * 100) };
               });
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
@@ -1421,7 +1439,7 @@ td.t2 { color: #666; white-space: nowrap; }
               </div>
             ))}
             {editBanks.length < 10 && (
-              <button onClick={() => setEditBanks(p => [...p, { id: "bnk_" + Date.now().toString(36), label: "", type: "bank", last4: "" }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Bank / Card</button>
+              <button onClick={() => setEditBanks(p => [...p, { id: "bnk_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), label: "", type: "bank", last4: "" }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Bank / Card</button>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={() => setBankMod(false)} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
@@ -1525,7 +1543,7 @@ td.t2 { color: #666; white-space: nowrap; }
               <div style={{ background: G.bg2, borderRadius: 14, padding: "16px 18px", marginBottom: 16 }}>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>2. Banks & Cards</div>
                 <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>Add your bank accounts (HDFC, SBI, etc.) and credit cards. Include the last 4 digits for automatic SMS matching.</div>
-                <button onClick={() => { onboardReturn.current = 2; setOnboardStep(null); setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
+                <button onClick={() => { onboardReturn.current = 2; setOnboardStep(null); setBankMod(true); setEditBanks(banks.length > 0 ? banks.map(b => ({ ...b })) : [{ id: "bnk_" + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), label: "", type: "bank", last4: "" }]); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Add Banks</button>
               </div>
             </>}
 

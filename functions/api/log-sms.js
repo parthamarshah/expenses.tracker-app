@@ -41,8 +41,8 @@ export async function onRequestPost(context) {
   const category = (body.category || "personal").trim().toLowerCase();
   let   payMode  = (body.pay_mode || "").trim();
 
-  if (!sms) {
-    return new Response(JSON.stringify({ ok: false, error: "sms field required" }), { status: 400, headers: cors });
+  if (!sms || sms.length > 1000) {
+    return new Response(JSON.stringify({ ok: false, error: !sms ? "sms field required" : "SMS too long" }), { status: 400, headers: cors });
   }
 
   // Step 1: Identify bank from SMS
@@ -117,7 +117,7 @@ export async function onRequestPost(context) {
       const newBank = { id: newBankId, label, type: payType === "card" ? "credit_card" : "bank", last4: smsLast4 || "" };
       const updatedBanks = [...userBanks, newBank];
       // Save to user_prefs (fire-and-forget, don't block the response)
-      supabase.from("user_prefs").upsert({ user_id: userId, banks_json: JSON.stringify(updatedBanks) }).then(() => {});
+      await supabase.from("user_prefs").upsert({ user_id: userId, banks_json: JSON.stringify(updatedBanks) });
       payMode = newBankId;
     } else {
       payMode = payType;
