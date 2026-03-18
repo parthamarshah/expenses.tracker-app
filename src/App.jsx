@@ -50,8 +50,7 @@ const hSince = (d) => (Date.now() - new Date(d).getTime()) / 36e5;
 const hap = () => { try { navigator.vibrate?.(6); } catch {} };
 const hasGujarati = (s) => /[\u0A80-\u0AFF]/.test(s);
 const gujStyle = (s, base = 16) => hasGujarati(s) ? { fontFamily: "'Noto Sans Gujarati', sans-serif", fontSize: Math.round(base * 1.2) } : {};
-const CAT_COLOR_PALETTE = ["#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40", "#2ECC71", "#E74C3C", "#3498DB", "#F39C12", "#1ABC9C", "#8E44AD"];
-const catColor = (id) => { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0; return CAT_COLOR_PALETTE[h % CAT_COLOR_PALETTE.length]; };
+const CAT_COLOR_PALETTE = ["#FF3B30", "#007AFF", "#34C759", "#FF9500", "#AF52DE", "#00C7BE", "#FF2D55", "#FFCC00", "#5856D6", "#FF6B35", "#30D158", "#6AC4DC"];
 
 const G = {
   bg: "#FFF", bg2: "#F5F5F5", bg3: "#EBEBEB", bdr: "#D4D4D4",
@@ -252,6 +251,11 @@ export default function ExpenseTracker() {
     ...cats,
     ...[...activeTrips, ...inactiveTrips].map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips, inactiveTrips]);
+
+  // Stable color per category/trip — sequential position, no hash collisions
+  const catColorMap = useMemo(() => {
+    const m = {}; allCats.forEach((c, i) => { m[c.id] = CAT_COLOR_PALETTE[i % CAT_COLOR_PALETTE.length]; }); return m;
+  }, [allCats]);
 
   // Visible categories only — used for history filter dropdowns
   const visCats = useMemo(() => allCats.filter(c => !c.hidden), [allCats]);
@@ -1013,7 +1017,7 @@ ${breakdownHtml}
                   <button onClick={doExportXLSX} style={{ background: "none", border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t3, cursor: "pointer", letterSpacing: 0.3 }}>Excel</button>
                   <button onClick={doExportPDF} style={{ background: G.bg2, border: `1.5px solid ${G.bdr}`, borderRadius: 8, padding: "3px 9px", fontSize: 11, fontWeight: 700, color: G.t2, cursor: "pointer", letterSpacing: 0.3 }}>PDF</button>
                 </>)}
-                <span style={{ fontWeight: 800, fontSize: 16, color: G.t1 }}>{formatINR(filtered.reduce((s, e) => s + e.amount, 0))}</span>
+                <span style={{ fontWeight: 800, fontSize: 16, color: G.t1 }}>{formatINR(filtered.reduce((s, e) => e.category === "investment" ? s : s + e.amount, 0))}</span>
               </div>
             </div>
 
@@ -1118,30 +1122,6 @@ ${breakdownHtml}
               </div>
             )}
 
-            {/* Yearly bar chart — monthly breakdown */}
-            {insPeriod === "year" && yearlyBars.length > 0 && (() => {
-              const maxVal = Math.max(...yearlyBars.map(b => b.total), 1);
-              const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-              return (
-                <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>Monthly Breakdown</div>
-                  {yearlyBars.map((b, i) => (
-                    <div key={i} onClick={() => { setInsPeriod("month"); setInsMonth({ year: insYear, month: i }); }} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, cursor: "pointer" }}>
-                      <span style={{ width: 28, fontSize: 11, fontWeight: 600, color: G.t3, flexShrink: 0 }}>{mNames[i]}</span>
-                      <div style={{ flex: 1, height: 18, background: G.bg3, borderRadius: 6, overflow: "hidden" }}>
-                        <div style={{ height: 18, borderRadius: 6, background: b.total > 0 ? G.dk : "transparent", width: `${(b.total / maxVal) * 100}%`, transition: "width .4s" }} />
-                      </div>
-                      <span style={{ fontSize: 12, fontWeight: 600, color: b.total > 0 ? G.t1 : G.tm, minWidth: 55, textAlign: "right" }}>{b.total > 0 ? formatINR(b.total) : "—"}</span>
-                    </div>
-                  ))}
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, padding: "8px 0 0", borderTop: `1px solid ${G.lt}` }}>
-                    <span style={{ fontSize: 13, color: G.t3 }}>Avg/month</span>
-                    <span style={{ fontSize: 13, fontWeight: 700 }}>{formatINR(Math.round(ins.totM / (yearlyBars.filter(b => b.total > 0).length || 1)))}</span>
-                  </div>
-                </div>
-              );
-            })()}
-
             {/* Pie Chart */}
             {Object.keys(ins.bc).length > 0 && (() => {
               const entries = Object.entries(ins.bc).sort((a, b) => b[1] - a[1]);
@@ -1160,7 +1140,7 @@ ${breakdownHtml}
                 const d = frac >= 0.999
                   ? `M 50 5 A 45 45 0 1 1 49.99 5 Z`
                   : `M 50 50 L ${x1} ${y1} A 45 45 0 ${largeArc} 1 ${x2} ${y2} Z`;
-                return { cid, d, color: catColor(cid), label: (allCats.find(x => x.id === cid) || cats[0] || { label: "Other" }).label, pct: Math.round(frac * 100) };
+                return { cid, d, color: catColorMap[cid] || "#8E8E93", label: (allCats.find(x => x.id === cid) || cats[0] || { label: "Other" }).label, pct: Math.round(frac * 100) };
               });
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
@@ -1190,7 +1170,7 @@ ${breakdownHtml}
               {(() => { return Object.entries(ins.bc).sort((a, b) => b[1] - a[1]).map(([cid, a]) => {
                 const c = allCats.find(x => x.id === cid) || cats[0];
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
-                const barCol = catColor(cid);
+                const barCol = catColorMap[cid] || "#8E8E93";
                 return (
                   <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
@@ -1213,6 +1193,33 @@ ${breakdownHtml}
                 </div>);
               }); })()}
             </div>
+
+            {/* Yearly bar chart — monthly breakdown (at end, trailing NIL months trimmed) */}
+            {insPeriod === "year" && yearlyBars.length > 0 && (() => {
+              const lastIdx = yearlyBars.reduce((last, b, i) => b.total > 0 ? i : last, -1);
+              const displayBars = lastIdx >= 0 ? yearlyBars.slice(0, lastIdx + 1) : [];
+              if (displayBars.length === 0) return null;
+              const maxVal = Math.max(...displayBars.map(b => b.total), 1);
+              const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+              return (
+                <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>Monthly Breakdown</div>
+                  {displayBars.map((b, i) => (
+                    <div key={i} onClick={() => { setInsPeriod("month"); setInsMonth({ year: insYear, month: i }); }} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, cursor: "pointer" }}>
+                      <span style={{ width: 28, fontSize: 11, fontWeight: 600, color: G.t3, flexShrink: 0 }}>{mNames[i]}</span>
+                      <div style={{ flex: 1, height: 18, background: G.bg3, borderRadius: 6, overflow: "hidden" }}>
+                        <div style={{ height: 18, borderRadius: 6, background: b.total > 0 ? G.dk : "transparent", width: `${(b.total / maxVal) * 100}%`, transition: "width .4s" }} />
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: b.total > 0 ? G.t1 : G.tm, minWidth: 55, textAlign: "right" }}>{b.total > 0 ? formatINR(b.total) : "—"}</span>
+                    </div>
+                  ))}
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, padding: "8px 0 0", borderTop: `1px solid ${G.lt}` }}>
+                    <span style={{ fontSize: 13, color: G.t3 }}>Avg/month</span>
+                    <span style={{ fontSize: 13, fontWeight: 700 }}>{formatINR(Math.round(ins.totM / (displayBars.filter(b => b.total > 0).length || 1)))}</span>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
