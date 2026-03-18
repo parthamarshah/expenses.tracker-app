@@ -23,6 +23,12 @@ export async function onRequestGet(context) {
     return new Response(JSON.stringify({ ok: false, error: "No key provided" }), { status: 401, headers: cors });
   }
 
+  // Check Cloudflare edge cache first (5-minute TTL per API key)
+  const cache = caches.default;
+  const cacheKey = request.url;
+  const cached = await cache.match(cacheKey);
+  if (cached) return cached;
+
   const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
@@ -36,13 +42,11 @@ export async function onRequestGet(context) {
   }
 
   const userId = keyRow.user_id;
-  const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
 
-  // Fetch prefs + trips + recent trip expenses all in parallel
-  const [{ data: prefsData }, { data: tripsData }, { data: expsData }] = await Promise.all([
+  // Fetch prefs + trips in parallel (removed expenses query — return all active trips)
+  const [{ data: prefsData }, { data: tripsData }] = await Promise.all([
     supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
-    supabase.from("trips").select("id, name, pinned").eq("user_id", userId).eq("archived", false).order("created_at", { ascending: false }),
-    supabase.from("expenses").select("trip_id").eq("user_id", userId).not("trip_id", "is", null).gte("date", sevenDaysAgo),
+    supabase.from("trips").select("id, name, pinned").eq("user_id", userId).eq("archived", false).order("pinned", { ascending: false }).order("created_at", { ascending: false }),
   ]);
 
   // Resolve user's categories from user_prefs.cats_json
@@ -51,7 +55,6 @@ export async function onRequestGet(context) {
     try {
       const parsed = JSON.parse(prefsData.cats_json);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        // Filter out hidden categories
         const visible = parsed.filter(c => !c.hidden);
         if (visible.length > 0) userCats = visible;
       }
@@ -61,25 +64,28 @@ export async function onRequestGet(context) {
   // Build category list with "icon label" format for iOS Shortcut display
   const categories = userCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
 
-  // Active trips (pinned or had expense in last 7 days)
-  const trips = tripsData || [];
-  const recentTripIds = new Set((expsData || []).map(e => e.trip_id));
-  const activeTrips = trips.filter(t => t.pinned || recentTripIds.has(t.id));
-  const tripCats = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
+  // Active trips (all non-archived, pinned ones first)
+  const tripCats = (tripsData || []).map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
 
   const allCategories = [...categories, ...tripCats];
-
-  // labels: flat array of display strings for iOS "Choose from List"
   const labels = allCategories.map(c => c.label);
-
-  // categories_map: label→id dictionary (useful for Android Shortcuts / mapping back)
   const categoriesMap = {};
   allCategories.forEach(c => { categoriesMap[c.label] = c.id; });
 
-  // categories_list: alias for labels (backward compat with Android shortcut)
-  const categoriesList = labels;
+  const body = JSON.stringify({
+    ok: true,
+    categories: allCategories,
+    labels,
+    categories_list: labels,
+    categories_map: categoriesMap,
+  });
 
-  return new Response(JSON.stringify({ ok: true, categories: allCategories, labels, categories_list: categoriesList, categories_map: categoriesMap }), { headers: cors });
+  // Cache for 5 minutes at Cloudflare edge
+  const response = new Response(body, {
+    headers: { ...cors, "Cache-Control": "private, max-age=300" },
+  });
+  context.waitUntil(cache.put(cacheKey, response.clone()));
+  return response;
 }
 
 export async function onRequestOptions() {

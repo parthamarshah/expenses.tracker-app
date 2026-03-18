@@ -120,6 +120,14 @@ export async function onRequestPost(context) {
   }
 
   const saved = await saveUserCats(supabase, userId, cats);
+
+  // Bust the /api/categories edge cache for this user's key
+  try {
+    const categoriesUrl = new URL(request.url);
+    categoriesUrl.pathname = "/api/categories";
+    context.waitUntil(caches.default.delete(categoriesUrl.toString()));
+  } catch {}
+
   return new Response(JSON.stringify({ ok: true, categories: saved }), { headers: cors });
 }
 
