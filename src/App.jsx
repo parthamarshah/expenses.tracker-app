@@ -50,6 +50,8 @@ const hSince = (d) => (Date.now() - new Date(d).getTime()) / 36e5;
 const hap = () => { try { navigator.vibrate?.(6); } catch {} };
 const hasGujarati = (s) => /[\u0A80-\u0AFF]/.test(s);
 const gujStyle = (s, base = 16) => hasGujarati(s) ? { fontFamily: "'Noto Sans Gujarati', sans-serif", fontSize: Math.round(base * 1.2) } : {};
+const CAT_COLOR_PALETTE = ["#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40", "#2ECC71", "#E74C3C", "#3498DB", "#F39C12", "#1ABC9C", "#8E44AD"];
+const catColor = (id) => { let h = 0; for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0; return CAT_COLOR_PALETTE[h % CAT_COLOR_PALETTE.length]; };
 
 const G = {
   bg: "#FFF", bg2: "#F5F5F5", bg3: "#EBEBEB", bdr: "#D4D4D4",
@@ -60,7 +62,7 @@ const G = {
 // Static styles hoisted to avoid re-allocation on every render
 const S = {
   expCard: { display: "flex", alignItems: "center", gap: 12, padding: "13px 14px", background: "#F5F5F5", borderRadius: 12, position: "relative", zIndex: 2, transition: "transform .2s ease", willChange: "transform" },
-  expIcon: { width: 38, height: 38, borderRadius: 10, background: "transparent", border: "1.5px solid #D4D4D4", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 },
+  expIcon: { width: 38, height: 38, borderRadius: 10, background: "transparent", border: "1.5px solid #D4D4D4", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0 },
 };
 
 export default function ExpenseTracker() {
@@ -630,13 +632,18 @@ td.t2 { color: #666; white-space: nowrap; }
   }, [insMonth, insYear, insPeriod]);
 
   const ins = useMemo(() => {
-    const tm = exps.filter(e => {
-      if (e.category === "investment") return false;
-      if (insExTrips && e.tripId) return false;
+    // Check for trip expenses in the current period (unaffected by insExTrips toggle)
+    const inPeriod = (e) => {
       if (insPeriod === "all") return true;
       const d = new Date(e.date);
       if (insPeriod === "year") return d.getFullYear() === insYear;
       return d.getMonth() === insMonth.month && d.getFullYear() === insMonth.year;
+    };
+    const hasTripInPeriod = exps.some(e => e.tripId && e.category !== "investment" && inPeriod(e));
+    const tm = exps.filter(e => {
+      if (e.category === "investment") return false;
+      if (insExTrips && e.tripId) return false;
+      return inPeriod(e);
     });
     const bc = {}, bp = {};
     tm.forEach(e => { const k = e.tripId ? `trip_${e.tripId}` : e.category; bc[k] = (bc[k] || 0) + e.amount; bp[e.payMode] = (bp[e.payMode] || 0) + e.amount; });
@@ -647,7 +654,7 @@ td.t2 { color: #666; white-space: nowrap; }
         ? e => e.category === "investment" && !e.tripId && new Date(e.date).getMonth() === insMonth.month && new Date(e.date).getFullYear() === insMonth.year
         : e => e.category === "investment" && !e.tripId;
     const totI = exps.filter(savFilter).reduce((s, e) => s + e.amount, 0);
-    return { bc, bp, totM, totI, mc: tm.length };
+    return { bc, bp, totM, totI, mc: tm.length, hasTripInPeriod };
   }, [exps, insMonth, insYear, insPeriod, insExTrips]);
 
   // Yearly bar chart data: monthly breakdown for the selected year
@@ -995,7 +1002,7 @@ td.t2 { color: #666; white-space: nowrap; }
             </div>
 
             {/* Exclude trips toggle */}
-            {trips.some(t => !t.archived) && (
+            {ins.hasTripInPeriod && (
               <div onClick={() => setInsExTrips(p => !p)} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, cursor: "pointer", padding: "8px 12px", background: insExTrips ? "#F0F7FF" : G.bg2, borderRadius: 10, border: `1.5px solid ${insExTrips ? "#4A90D9" : G.bdr}` }}>
                 <div style={{ width: 18, height: 18, borderRadius: 5, border: `2px solid ${insExTrips ? "#4A90D9" : G.bdr}`, background: insExTrips ? "#4A90D9" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#FFF", fontWeight: 700, flexShrink: 0 }}>{insExTrips ? "✓" : ""}</div>
                 <span style={{ fontSize: 14, fontWeight: 600, color: insExTrips ? "#4A90D9" : G.t2 }}>Exclude trips</span>
@@ -1029,11 +1036,10 @@ td.t2 { color: #666; white-space: nowrap; }
 
             {/* Pie Chart */}
             {Object.keys(ins.bc).length > 0 && (() => {
-              const PIE_COLORS = ["#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40", "#2ECC71", "#E74C3C", "#3498DB", "#F39C12", "#1ABC9C", "#8E44AD"];
               const entries = Object.entries(ins.bc).sort((a, b) => b[1] - a[1]);
               const total = ins.totM || 1;
               let cumAngle = 0;
-              const slices = entries.map(([cid, amt], i) => {
+              const slices = entries.map(([cid, amt]) => {
                 const frac = amt / total;
                 const startAngle = cumAngle;
                 cumAngle += frac * 360;
@@ -1046,7 +1052,7 @@ td.t2 { color: #666; white-space: nowrap; }
                 const d = frac >= 0.999
                   ? `M 50 5 A 45 45 0 1 1 49.99 5 Z`
                   : `M 50 50 L ${x1} ${y1} A 45 45 0 ${largeArc} 1 ${x2} ${y2} Z`;
-                return { cid, d, color: PIE_COLORS[i % PIE_COLORS.length], label: (allCats.find(x => x.id === cid) || cats[0] || { label: "Other" }).label, pct: Math.round(frac * 100) };
+                return { cid, d, color: catColor(cid), label: (allCats.find(x => x.id === cid) || cats[0] || { label: "Other" }).label, pct: Math.round(frac * 100) };
               });
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
@@ -1073,10 +1079,10 @@ td.t2 { color: #666; white-space: nowrap; }
 
             <div style={{ marginBottom: 22 }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>By Category <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· tap to filter history</span></div>
-              {(() => { const CAT_COLORS = ["#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40", "#2ECC71", "#E74C3C", "#3498DB", "#F39C12", "#1ABC9C", "#8E44AD"]; return Object.entries(ins.bc).sort((a, b) => b[1] - a[1]).map(([cid, a], i) => {
+              {(() => { return Object.entries(ins.bc).sort((a, b) => b[1] - a[1]).map(([cid, a]) => {
                 const c = allCats.find(x => x.id === cid) || cats[0];
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
-                const barCol = CAT_COLORS[i % CAT_COLORS.length];
+                const barCol = catColor(cid);
                 return (
                   <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
