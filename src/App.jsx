@@ -23,8 +23,8 @@ const NEW_DEFAULT_CATEGORIES = [
 // Alias used by the cat modal Reset button
 const DEFAULT_CATEGORIES = OLD_DEFAULT_CATEGORIES;
 // iCloud Shortcut links — update after sharing/re-sharing
-const SHORTCUT_ICLOUD_URL = "https://www.icloud.com/shortcuts/31e442fe1b6044da9f9b9545ccf9f62e";
-const CASH_SHORTCUT_URL = "https://www.icloud.com/shortcuts/c6b81f87a9a14153b2421b1216240144";
+const SHORTCUT_ICLOUD_URL = "https://www.icloud.com/shortcuts/4dbf6ffb530347beb3c13f0969304d60"; // Bank/SMS expense
+const CASH_SHORTCUT_URL   = "https://www.icloud.com/shortcuts/de22d5366b2a44c18bfe327c6387d0bf"; // Manual cash expense
 
 const formatINR = (n) => {
   if (n == null || n === "") return "\u20B90";
@@ -880,9 +880,9 @@ ${breakdownHtml}
 
   // ── RENDER ────────────────────────────────────────────────────────────────
   return (
-    <div style={{ maxWidth: 390, margin: "0 auto", minHeight: "100dvh", display: "flex", flexDirection: "column", background: G.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif", color: G.t1, position: "relative", WebkitFontSmoothing: "antialiased" }}>
+    <div style={{ maxWidth: 390, margin: "0 auto", minHeight: "100dvh", display: "flex", flexDirection: "column", background: G.bg, fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif", color: G.t1, position: "relative", WebkitFontSmoothing: "antialiased", paddingTop: "env(safe-area-inset-top)" }}>
 
-      {toast && <div style={{ position: "fixed", top: 52, left: "50%", transform: "translateX(-50%)", padding: "10px 28px", borderRadius: 100, zIndex: 9999, background: G.bk, color: G.wh, fontSize: 15, fontWeight: 600, boxShadow: "0 6px 24px rgba(0,0,0,.25)" }}>{toast.m}</div>}
+      {toast && <div style={{ position: "fixed", top: "calc(env(safe-area-inset-top, 0px) + 52px)", left: "50%", transform: "translateX(-50%)", padding: "10px 28px", borderRadius: 100, zIndex: 9999, background: G.bk, color: G.wh, fontSize: 15, fontWeight: 600, boxShadow: "0 6px 24px rgba(0,0,0,.25)", whiteSpace: "nowrap" }}>{toast.m}</div>}
 
       <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 18px", background: G.bg, borderBottom: `1px solid ${G.bdr}`, position: "sticky", top: 0, zIndex: 100 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -1393,9 +1393,9 @@ ${breakdownHtml}
       {keyMod && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => setKeyMod(false)}>
           <div
-            onTouchStart={e => { mRef.current.ky = e.touches[0].clientY; }}
-            onTouchEnd={e => { if (e.changedTouches[0].clientY - mRef.current.ky > 80) setKeyMod(false); }}
-            style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            onTouchStart={e => { mRef.current.ky = e.touches[0].clientY; mRef.current.kyScroll = e.currentTarget.scrollTop; }}
+            onTouchEnd={e => { if (mRef.current.kyScroll === 0 && e.changedTouches[0].clientY - mRef.current.ky > 80) setKeyMod(false); }}
+            style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 0", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
               <div style={{ width: 30 }} />
               <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt }} />
@@ -1416,7 +1416,7 @@ ${breakdownHtml}
                   </div>
                   <button onClick={copyKey} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 700, cursor: "pointer", flexShrink: 0, marginLeft: "auto" }}>Copy</button>
                 </div>
-                <div style={{ fontSize: 12, color: G.t3, marginBottom: 8, lineHeight: 1.4 }}>Copy this key and paste it when the shortcuts below ask for it on first run.</div>
+                <div style={{ fontSize: 12, color: G.t3, marginBottom: 8, lineHeight: 1.4 }}>Copy this key. The shortcuts will ask for it <b>once</b> on first run, then save it to iCloud Drive automatically — you will never be asked again.</div>
                 <button onClick={handleGenerateKey} disabled={keyLoading}
                   style={{ width: "100%", padding: "10px", borderRadius: 10, border: `1.5px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>
                   {keyLoading ? "Generating\u2026" : "Regenerate Key"}
@@ -1443,38 +1443,41 @@ ${breakdownHtml}
 
                 <div style={{ marginBottom: 14 }}>
                   <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add Shortcuts</div>
-                  <div style={{ marginBottom: 6 }}>Add both shortcuts to your iPhone. Each asks for your API key on first run — paste it from above.</div>
+                  <div style={{ marginBottom: 6 }}>Add both shortcuts to your iPhone. On first run each will ask for your key once, then save it to <b>iCloud Drive → Shortcuts</b> — never asked again.</div>
                   <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
                     <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
                       style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
-                      Log Expense {"\u2192"}
+                      Bank Expense {"\u2192"}
                     </a>
                     <a href={CASH_SHORTCUT_URL} target="_blank" rel="noopener noreferrer"
                       style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
                       Cash Expense {"\u2192"}
                     </a>
                   </div>
-                  <div style={{ fontSize: 12, color: G.t3, marginTop: 4 }}><b>Log Expense</b> — auto-logs bank SMS. <b>Cash Expense</b> — manually add cash spending with amount, category & note.</div>
+                  <div style={{ fontSize: 12, color: G.t3, marginTop: 4, lineHeight: 1.5 }}>
+                    <b>Bank Expense</b> — auto-logs bank SMS debits. Set up an automation so it runs silently on every bank message.{"\n"}
+                    <b>Cash Expense</b> — tap to manually log a cash spend: enter amount, pick category, add note.
+                  </div>
                 </div>
 
                 <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Create Automation</div>
+                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Automate Bank SMS</div>
                   <div>Open <b>Shortcuts</b> app {"\u2192"} <b>Automation</b> tab {"\u2192"} <b>+</b></div>
                   <div>Select <b>Message</b> trigger</div>
                   <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
-                    <div><b>Sender contains:</b> <span style={{ color: G.t3 }}>(leave blank)</span></div>
-                    <div><b>Message contains:</b> your bank name (e.g. "Kotak Bank")</div>
+                    <div><b>Sender contains:</b> your bank SMS ID (e.g. "HDFCBK")</div>
+                    <div><b>Message contains:</b> "debited"</div>
                   </div>
                   <div style={{ marginTop: 6 }}>Set the action:</div>
                   <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 4, fontSize: 12, lineHeight: 1.7 }}>
-                    <div><b>Run Shortcut</b> {"\u2192"} select "Log Expense"</div>
+                    <div><b>Run Shortcut</b> {"\u2192"} select "Bank Expense"</div>
                     <div><b>Input:</b> Message (the SMS body)</div>
                   </div>
                   <div style={{ marginTop: 6 }}>Turn off <b>"Ask Before Running"</b></div>
                 </div>
 
-                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
-                  Tip: For multiple banks, create one automation per bank. They all use the same "Log Expense" shortcut. The system auto-identifies which bank sent the SMS.
+                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10, lineHeight: 1.5 }}>
+                  Tip: Add one automation per bank — they all use the same "Bank Expense" shortcut. Your key is stored once in iCloud Drive and shared across both shortcuts automatically.
                 </div>
               </div>
             )}
@@ -1525,6 +1528,10 @@ ${breakdownHtml}
                 <div style={{ fontFamily: "monospace", fontSize: 11, color: G.t2, marginTop: 2, wordBreak: "break-all" }}>{API_BASE}/api/log-sms</div>
               </div>
               <button onClick={() => copyText(`${API_BASE}/api/log-sms`)} style={{ background: G.bk, color: G.wh, border: "none", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}>Copy</button>
+            </div>
+            {/* Sticky close button at bottom */}
+            <div style={{ position: "sticky", bottom: 0, background: G.bg, paddingTop: 10, paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)", paddingLeft: 0, paddingRight: 0, borderTop: `1px solid ${G.lt}`, marginTop: 14 }}>
+              <button onClick={() => setKeyMod(false)} style={{ width: "100%", padding: "14px", borderRadius: 14, border: "none", background: G.bg2, color: G.t1, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>Close</button>
             </div>
           </div>
         </div>

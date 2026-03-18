@@ -21,7 +21,17 @@ export function AuthProvider({ children }) {
       if (event === "SIGNED_OUT")        setNeedsPasswordReset(false);
     });
 
-    return () => subscription.unsubscribe();
+    // PWA fix: when app returns to foreground after OAuth redirect in Safari,
+    // the session is now in localStorage but onAuthStateChange didn't fire.
+    // Re-reading the session picks it up.
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        supabase.auth.getSession().then(({ data: { session } }) => setSession(s => s?.access_token === session?.access_token ? s : session));
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => { subscription.unsubscribe(); document.removeEventListener("visibilitychange", onVisible); };
   }, []);
 
   const signOut = () => supabase.auth.signOut();
