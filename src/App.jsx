@@ -458,6 +458,49 @@ export default function ExpenseTracker() {
     const total = filtered.reduce((s, e) => s + e.amount, 0);
     const generated = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
     const fileName = `Expenses-${esc(periodLabel).replace(/[^\w]/g, "-")}-${new Date().toISOString().slice(0, 10)}`;
+
+    // ── Breakdown computations ──────────────────────────────────────────────
+    const byCat = {}, byPay = {};
+    const periodMap = new Map();
+    const allYears = new Set(filtered.map(e => new Date(e.date).getFullYear()));
+    const sameYearData = allYears.size === 1;
+    const allMonths = new Set(filtered.map(e => { const d = new Date(e.date); return d.getFullYear() * 12 + d.getMonth(); }));
+    const showTimeSplit = histPeriod !== "month" && allMonths.size > 1;
+    filtered.forEach(e => {
+      const cl = getCatLabel(e);
+      byCat[cl] = (byCat[cl] || 0) + e.amount;
+      byPay[getPayLabel(e.payMode)] = (byPay[getPayLabel(e.payMode)] || 0) + e.amount;
+      if (showTimeSplit) {
+        const d = new Date(e.date);
+        const sortKey = sameYearData
+          ? `${d.getFullYear()}-${String(d.getMonth()).padStart(2, "0")}`
+          : d.getFullYear().toString();
+        const label = sameYearData
+          ? d.toLocaleDateString("en-IN", { month: "long" })
+          : d.getFullYear().toString();
+        if (!periodMap.has(sortKey)) periodMap.set(sortKey, { label, total: 0 });
+        periodMap.get(sortKey).total += e.amount;
+      }
+    });
+    const catEntries = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
+    const payEntries = Object.entries(byPay).sort((a, b) => b[1] - a[1]);
+    const periodEntries = [...periodMap.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => v);
+
+    const bkTableRows = (entries) => entries.map(([label, amt]) =>
+      `<tr><td>${esc(label)}</td><td class="bamt">\u20B9${amt.toLocaleString("en-IN")}</td><td class="bpct">${Math.round(amt / total * 100)}%</td></tr>`
+    ).join("");
+    const periodTableRows = periodEntries.map(({ label, total: t }) =>
+      `<tr><td>${esc(label)}</td><td class="bamt">\u20B9${t.toLocaleString("en-IN")}</td><td class="bpct">${Math.round(t / total * 100)}%</td></tr>`
+    ).join("");
+
+    const breakdownSections = [];
+    if (catEntries.length > 1) breakdownSections.push(`<div class="bk"><div class="bk-title">By Category</div><table class="bkt"><tbody>${bkTableRows(catEntries)}</tbody></table></div>`);
+    if (payEntries.length > 1) breakdownSections.push(`<div class="bk"><div class="bk-title">By Payment Mode</div><table class="bkt"><tbody>${bkTableRows(payEntries)}</tbody></table></div>`);
+    if (periodEntries.length > 1) breakdownSections.push(`<div class="bk"><div class="bk-title">${sameYearData ? "By Month" : "By Year"}</div><table class="bkt"><tbody>${periodTableRows}</tbody></table></div>`);
+    const breakdownHtml = breakdownSections.length > 0
+      ? `<div class="bk-wrap">${breakdownSections.join("")}</div>`
+      : "";
+
     const rows = [...filtered].reverse().map(e => `
       <tr>
         <td>${tds(e.date)}</td>
@@ -487,10 +530,18 @@ tr:nth-child(even) td { background: #F8F8F8; }
 td.amt { text-align: right; font-weight: 700; white-space: nowrap; }
 td.t2 { color: #666; white-space: nowrap; }
 .em { color: #AAA; }
-.summary { display: flex; justify-content: space-between; align-items: flex-end; padding-top: 14px; border-top: 2px solid #111; }
+.summary { display: flex; justify-content: space-between; align-items: flex-end; padding-top: 14px; border-top: 2px solid #111; margin-bottom: 28px; }
 .sum-label { font-size: 11px; font-weight: 700; color: #666; letter-spacing: 0.8px; text-transform: uppercase; }
 .sum-total { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin-top: 3px; }
 .sum-meta { font-size: 12px; color: #888; }
+.bk-wrap { display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 24px; }
+.bk { flex: 1; min-width: 160px; }
+.bk-title { font-size: 11px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase; color: #666; margin-bottom: 8px; }
+.bkt { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 0; }
+.bkt td { padding: 5px 6px; border-bottom: 1px solid #EBEBEB; }
+.bkt tr:last-child td { border-bottom: none; }
+td.bamt { text-align: right; font-weight: 700; white-space: nowrap; }
+td.bpct { text-align: right; color: #888; font-size: 11px; width: 36px; }
 .footer { margin-top: 24px; font-size: 10px; color: #BBB; text-align: center; }
 @media print { body { padding: 0; } @page { margin: 1.5cm; size: A4 portrait; } }
 </style>
@@ -521,6 +572,7 @@ td.t2 { color: #666; white-space: nowrap; }
     <div class="sum-total">\u20B9${total.toLocaleString("en-IN")}</div>
   </div>
 </div>
+${breakdownHtml}
 <div class="footer">Expense Tracker</div>
 <script>document.title = "${esc(fileName)}"; window.addEventListener("load", () => setTimeout(() => window.print(), 250));<\/script>
 </body>
@@ -528,7 +580,7 @@ td.t2 { color: #666; white-space: nowrap; }
     const win = window.open("", "_blank");
     if (win) { win.document.write(html); win.document.close(); }
     else sToast("Allow pop-ups to export PDF", "err");
-  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, sToast, session, esc]);
+  }, [filtered, cats, trips, selTrip, fCat, fPay, allCats, histPeriod, sToast, session, esc]);
 
   const doExportXLSX = useCallback(async () => {
     if (filtered.length === 0) return;
@@ -539,6 +591,8 @@ td.t2 { color: #666; white-space: nowrap; }
       return cats.find(c => c.id === e.category)?.label || e.category;
     };
     const wb = new ExcelJS.Workbook();
+
+    // ── Main expenses sheet ─────────────────────────────────────────────────
     const ws = wb.addWorksheet("Expenses");
     ws.columns = [
       { header: "Date", key: "date", width: 14 },
@@ -554,6 +608,60 @@ td.t2 { color: #666; white-space: nowrap; }
     [...filtered].reverse().forEach(e => {
       ws.addRow({ date: tds(e.date), time: tts(e.date), category: getCatLabel(e), note: e.note || "", payMode: getPayLabel(e.payMode), amount: e.amount });
     });
+
+    // ── Summary sheet ───────────────────────────────────────────────────────
+    const ss = wb.addWorksheet("Summary");
+    ss.columns = [{ header: "", key: "label", width: 22 }, { header: "", key: "amount", width: 16 }, { header: "", key: "pct", width: 10 }];
+    const total = filtered.reduce((s, e) => s + e.amount, 0);
+    const hStyle = { font: { bold: true, size: 11 }, fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FF111111" } }, alignment: { horizontal: "left" } };
+    const subHStyle = { font: { bold: true, size: 10 }, fill: { type: "pattern", pattern: "solid", fgColor: { argb: "FFE8E8E8" } } };
+    const addSection = (title, entries) => {
+      if (entries.length < 2) return;
+      const hr = ss.addRow([title, "Amount (INR)", "%"]);
+      hr.eachCell(c => { Object.assign(c, hStyle); if (hStyle.fill) { c.fill = hStyle.fill; c.font = { ...hStyle.font, color: { argb: "FFFFFFFF" } }; } });
+      entries.forEach(([label, amt]) => {
+        const r = ss.addRow([label, amt, `${Math.round(amt / total * 100)}%`]);
+        r.getCell(2).numFmt = "#,##0";
+        r.getCell(2).alignment = { horizontal: "right" };
+        r.getCell(3).alignment = { horizontal: "right" };
+      });
+      const tr = ss.addRow(["Total", total, "100%"]);
+      tr.eachCell(c => { c.font = { bold: true }; });
+      tr.getCell(2).numFmt = "#,##0";
+      tr.getCell(2).alignment = { horizontal: "right" };
+      tr.getCell(3).alignment = { horizontal: "right" };
+      ss.addRow([]);
+    };
+
+    // By category
+    const byCat = {};
+    filtered.forEach(e => { const k = getCatLabel(e); byCat[k] = (byCat[k] || 0) + e.amount; });
+    addSection("BY CATEGORY", Object.entries(byCat).sort((a, b) => b[1] - a[1]));
+
+    // By payment mode
+    const byPay = {};
+    filtered.forEach(e => { byPay[getPayLabel(e.payMode)] = (byPay[getPayLabel(e.payMode)] || 0) + e.amount; });
+    addSection("BY PAYMENT MODE", Object.entries(byPay).sort((a, b) => b[1] - a[1]));
+
+    // By period (months or years)
+    if (histPeriod !== "month") {
+      const periodMap = new Map();
+      const allYears = new Set(filtered.map(e => new Date(e.date).getFullYear()));
+      const sameYearData = allYears.size === 1;
+      filtered.forEach(e => {
+        const d = new Date(e.date);
+        const sortKey = sameYearData ? `${d.getFullYear()}-${String(d.getMonth()).padStart(2, "0")}` : d.getFullYear().toString();
+        const label = sameYearData ? d.toLocaleDateString("en-IN", { month: "long" }) : d.getFullYear().toString();
+        if (!periodMap.has(sortKey)) periodMap.set(sortKey, { label, total: 0 });
+        periodMap.get(sortKey).total += e.amount;
+      });
+      const periodEntries = [...periodMap.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([, v]) => [v.label, v.total]);
+      addSection(sameYearData ? "BY MONTH" : "BY YEAR", periodEntries);
+    }
+
+    // Style header row of summary sheet
+    const sh = ss.getRow(1); sh.height = 0; // hide the auto-generated blank header
+
     const buffer = await wb.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
@@ -561,7 +669,7 @@ td.t2 { color: #666; white-space: nowrap; }
     a.href = url; a.download = `Expenses-${new Date().toISOString().slice(0, 10)}.xlsx`; a.click();
     URL.revokeObjectURL(url);
     sToast("Excel downloaded");
-  }, [filtered, cats, trips, sToast]);
+  }, [filtered, cats, trips, histPeriod, sToast]);
 
   // ── Custom categories ─────────────────────────────────────────────────────
   const openCatMod = useCallback(() => {
