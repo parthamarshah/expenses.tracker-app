@@ -296,6 +296,16 @@ function isDebitSms(sms) {
   if (/\brevers(?:al|ed)\b/.test(s) && !/debit(?:ed)?/i.test(s)) return false;
   if (/money\s+received/i.test(s)) return false;
 
+  // Skip EMI conversion promotional messages — banks advertise converting a purchase to EMI.
+  // These look like debits (mention amounts, bank name) but are NOT new transactions.
+  // Examples: "split your INR 5880 spend into EMIs", "Manage this purchase better..."
+  // Keep actual EMI payment confirmations (those say "debited" with a clear debit action).
+  if (/manage\s+this\s+purchase\s+better/i.test(sms)) return false;
+  if (/split\s+your\s+.*\s+spend\s+.*\s+into\s+emi/i.test(sms)) return false;
+  if (/convert\s+(?:your\s+)?(?:.*\s+)?(?:purchase|spend|transaction)\s+(?:in)?to\s+emi/i.test(sms)) return false;
+  if (/eligible\s+(?:for\s+)?(?:an?\s+)?emi\s+(?:conversion|facility|option)/i.test(sms)) return false;
+  if (/\bemi\s+(?:conversion|facility|offer)\b/i.test(sms) && !/\bemi\b.*\bdebited\b|\bdebited\b.*\bemi\b/i.test(sms)) return false;
+
   // Must contain at least one debit-type keyword
   return /debit(?:ed)?|withdrawn|withdrawal|\bsent\b|spent|paid|purchase[d]?|transfer(?:red)?\s+from|payment\s+of|\bemi\b|\btxn\b|debited\s+by|money\s+sent|bill\s+payment|top.?up|\bcharged\b|card\s+(?:has\s+been\s+)?used/i.test(sms);
 }

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "./supabase";
 import { useAuth } from "./AuthContext";
 
@@ -74,6 +74,14 @@ export default function Auth() {
   return <AuthInner />;
 }
 
+function useStats() {
+  const [stats, setStats] = useState(null);
+  useEffect(() => {
+    fetch("/api/stats").then(r => r.json()).then(d => { if (d.ok) setStats(d); }).catch(() => {});
+  }, []);
+  return stats;
+}
+
 function AuthInner() {
   const [mode,     setMode]     = useState("login");   // "login" | "register" | "forgot"
   const [email,    setEmail]    = useState("");
@@ -81,6 +89,7 @@ function AuthInner() {
   const [err,      setErr]      = useState("");
   const [info,     setInfo]     = useState("");
   const [busy,     setBusy]     = useState(false);
+  const stats = useStats();
 
   const reset = (m) => { setMode(m); setErr(""); setInfo(""); };
 
@@ -260,6 +269,33 @@ function AuthInner() {
       {mode === "login" && (
         <div style={{ textAlign: "center", marginTop: 14, fontSize: 12, color: G.tm, lineHeight: 1.5 }}>
           Forgot which email you used? Try your common addresses, or use Google sign-in if that's how you registered.
+        </div>
+      )}
+
+      {/* Anonymous aggregate stats */}
+      {stats && (
+        <div style={{ marginTop: 28, borderTop: `1px solid ${G.bdr}`, paddingTop: 20 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: G.tm, textTransform: "uppercase",
+                        letterSpacing: 1.2, textAlign: "center", marginBottom: 12 }}>
+            Community Stats
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[
+              { label: "Expenses logged", value: stats.total_expenses.toLocaleString("en-IN") },
+              { label: "This week", value: stats.expenses_this_week.toLocaleString("en-IN") },
+              { label: "Active users", value: stats.active_users_this_week.toLocaleString("en-IN") },
+            ].map(s => (
+              <div key={s.label} style={{ flex: 1, textAlign: "center", background: G.bg2,
+                                          borderRadius: 12, padding: "10px 6px" }}>
+                <div style={{ fontSize: 18, fontWeight: 800, color: G.t1, letterSpacing: -0.5 }}>
+                  {s.value}
+                </div>
+                <div style={{ fontSize: 10, color: G.t3, marginTop: 3, lineHeight: 1.3 }}>
+                  {s.label}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

@@ -352,7 +352,7 @@ export default function ExpenseTracker() {
       const origTime = orig?.date ? new Date(orig.date).toISOString().slice(11) : "12:00:00.000Z";
       const updated = { ...orig, amount: v, note: note.trim(), category: tid ? "trip" : cat, payMode: pay, tripId: tid, date: editDate ? new Date(editDate + "T" + origTime).toISOString() : orig?.date };
       setExps(p => p.map(e => e.id === editId ? updated : e).sort((a, b) => new Date(b.date) - new Date(a.date)));
-      setEditId(null); setEditDate(""); sToast("Updated");
+      setEditId(null); setEditDate(""); sToast("Updated"); setView("list");
       supabase.from("expenses").update(expToDb(updated, userId)).eq("id", editId)
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
     } else {
@@ -875,7 +875,9 @@ ${breakdownHtml}
   const getCL = (e) => { if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; } if (e.category === "uncategorized") return UNCAT.label; return cats.find(c => c.id === e.category)?.label || e.category; };
   const getCI = (e) => { if (e.tripId) return "\u2708\uFE0F"; if (e.category === "uncategorized") return UNCAT.icon; return cats.find(c => c.id === e.category)?.icon || "?"; };
 
-  const navTo = (t) => { hap(); if (t === "list") { setSelTrip(null); setFCat("all"); setFPay("all"); setSq(""); } setSw({ id: null, dir: null }); setSwipeConf(null); setView(t); };
+  // navTo: navigate to tab. Only clear filters when explicitly resetting (e.g., tapping ₹ logo → Add).
+  // Navigating back to History preserves whatever filter the user had set.
+  const navTo = (t) => { hap(); setSw({ id: null, dir: null }); setSwipeConf(null); setView(t); };
   const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setHistPeriod("all"); setView("list"); };
 
   const B = (sel, children, onClick, extra = {}) => (
@@ -912,7 +914,7 @@ ${breakdownHtml}
         </div>
       </header>
 
-      <main style={{ flex: 1, overflowY: view === "add" ? "hidden" : "auto", paddingBottom: 72 }}>
+      <main style={{ flex: 1, overflowY: "auto", paddingBottom: 72 }}>
 
         {/* Skeleton while loading from DB */}
         {!dbReady && (
@@ -924,7 +926,7 @@ ${breakdownHtml}
 
         {/* ══════ ADD ══════ */}
         {dbReady && view === "add" && (
-          <div style={{ padding: "8px 18px 0", display: "flex", flexDirection: "column", height: "calc(100dvh - 48px - 64px)", overflow: "hidden", justifyContent: "space-between" }}>
+          <div style={{ padding: "8px 18px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
             <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", padding: "10px 0 4px" }}>
               <span style={{ fontSize: 32, fontWeight: 300, color: G.tm, marginRight: 2 }}>{"\u20B9"}</span>
               <input ref={aRef} type="tel" inputMode="numeric" pattern="[0-9]*" placeholder="0" value={amt} onChange={e => setAmt(e.target.value.replace(/[^0-9]/g, ""))} onKeyDown={e => { if (e.key === "Enter") doSave(); }} style={{ fontSize: 46, fontWeight: 800, border: "none", outline: "none", width: "55%", textAlign: "center", color: G.t1, background: "transparent", letterSpacing: -2, caretColor: G.md }} autoFocus autoComplete="off" />
@@ -980,8 +982,14 @@ ${breakdownHtml}
                   </div>
                 );
               })()}
-              <button onClick={doSave} style={{ width: "100%", padding: "15px", borderRadius: 14, border: "none", background: G.bk, color: G.wh, fontSize: 18, fontWeight: 700, cursor: "pointer" }}>{editId ? "Update" : "Save"}</button>
-              {editId && <button onClick={() => { setEditId(null); setEditDate(""); setAmt(""); setNote(""); }} style={{ width: "100%", padding: "11px", borderRadius: 12, marginTop: 5, border: `2px solid ${G.bdr}`, background: "transparent", color: G.t2, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Cancel</button>}
+              {editId ? (
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => { setEditId(null); setEditDate(""); setAmt(""); setNote(""); setView("list"); }} style={{ flex: 1, padding: "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: "transparent", color: G.t2, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Cancel</button>
+                  <button onClick={doSave} style={{ flex: 2, padding: "14px", borderRadius: 14, border: "none", background: G.bk, color: G.wh, fontSize: 17, fontWeight: 700, cursor: "pointer" }}>Update</button>
+                </div>
+              ) : (
+                <button onClick={doSave} style={{ width: "100%", padding: "15px", borderRadius: 14, border: "none", background: G.bk, color: G.wh, fontSize: 18, fontWeight: 700, cursor: "pointer" }}>Save</button>
+              )}
             </div>
           </div>
         )}

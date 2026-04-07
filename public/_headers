@@ -3,3 +3,7 @@
   X-Frame-Options: DENY
   Referrer-Policy: strict-origin-when-cross-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+# Hashed JS/CSS assets — cache for 1 year (content-hash changes on update)
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
