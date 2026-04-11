@@ -96,7 +96,6 @@ const checkMindfulEligibility = (exps, today) => {
   });
   const counts = months.map(m => exps.filter(e => {
     if (e.category === "investment") return false;
-    if (e.tripId) return false;
     const d = new Date(e.date);
     return d.getMonth() === m.month && d.getFullYear() === m.year;
   }).length);
