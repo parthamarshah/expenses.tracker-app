@@ -31,8 +31,10 @@ export async function onRequestGet(context) {
 
   const userId = keyRow.user_id;
 
-  // Fetch uncategorized expenses + user categories + trips in parallel
-  const [{ data: expenses }, { data: prefsData }, { data: tripsData }] = await Promise.all([
+  const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
+
+  // Fetch uncategorized expenses + user categories + trips + recent trip activity in parallel
+  const [{ data: expenses }, { data: prefsData }, { data: tripsData }, { data: recentTripExps }] = await Promise.all([
     supabase.from("expenses")
       .select("id, amount, note, date")
       .eq("user_id", userId)
@@ -40,9 +42,16 @@ export async function onRequestGet(context) {
       .order("date", { ascending: false })
       .limit(20),
     supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
-    supabase.from("trips").select("id, name, pinned").eq("user_id", userId)
+    supabase.from("trips").select("id, name, icon, pinned, created_at").eq("user_id", userId)
       .eq("archived", false).order("pinned", { ascending: false }),
+    supabase.from("expenses").select("trip_id").eq("user_id", userId).not("trip_id", "is", null).gte("date", sevenDaysAgo).limit(100),
   ]);
+
+  // Filter to active trips only
+  const recentTripIds = new Set((recentTripExps || []).map(e => e.trip_id));
+  const activeTrips = (tripsData || []).filter(t =>
+    t.pinned || recentTripIds.has(t.id) || new Date(t.created_at) >= new Date(sevenDaysAgo)
+  );
 
   // Build category labels + map for shortcut
   let userCats = OLD_DEFAULT_CATEGORIES;
@@ -57,8 +66,8 @@ export async function onRequestGet(context) {
   }
 
   const catEntries = userCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
-  const tripEntries = (tripsData || []).map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
-  const allEntries = [...catEntries, ...tripEntries];
+  const tripEntries = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `${t.icon || "\u2708\uFE0F"} ${t.name}` }));
+  const allEntries = [...catEntries, ...tripEntries, { id: "do_not_log", label: "\u274C Do not Log" }];
   const labels = allEntries.map(c => c.label);
   const categoriesMap = {};
   allEntries.forEach(c => { categoriesMap[c.label] = c.id; });

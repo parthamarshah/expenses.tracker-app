@@ -197,7 +197,8 @@ const buildMindfulReport = (exps, period, trips, prefs, history) => {
 
   const tripMap = new Map();
   for (const e of tripExps) {
-    const t = tripMap.get(e.tripId) || { tripId: e.tripId, name: (trips.find(tr => tr.id === e.tripId)?.name || "Trip"), spend: 0, entries: 0 };
+    const tr = trips.find(tr => tr.id === e.tripId);
+    const t = tripMap.get(e.tripId) || { tripId: e.tripId, name: (tr?.name || "Trip"), icon: (tr?.icon || "\u2708\uFE0F"), spend: 0, entries: 0 };
     t.spend += e.amount; t.entries += 1;
     tripMap.set(e.tripId, t);
   }
@@ -241,6 +242,7 @@ export default function ExpenseTracker() {
   const [tripMod,   setTripMod]   = useState(false);
   const [tName,     setTName]     = useState("");
   const [tBudg,     setTBudg]     = useState("");
+  const [tIcon,     setTIcon]     = useState("\u2708\uFE0F");
   const [editTripId,setEditTripId]= useState(null);
   const [selTrip,   setSelTrip]   = useState(null);
   const [sw,        setSw]        = useState({ id: null, dir: null });
@@ -483,12 +485,12 @@ export default function ExpenseTracker() {
 
   const addCats = useMemo(() => [
     ...cats.filter(c => !c.hidden),
-    ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
+    ...activeTrips.map(t => ({ id: `trip_${t.id}`, label: t.name, icon: t.icon || "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips]);
 
   const allCats = useMemo(() => [
     ...cats,
-    ...[...activeTrips, ...inactiveTrips].map(t => ({ id: `trip_${t.id}`, label: t.name, icon: "\u2708\uFE0F", isTrip: true })),
+    ...[...activeTrips, ...inactiveTrips].map(t => ({ id: `trip_${t.id}`, label: t.name, icon: t.icon || "\u2708\uFE0F", isTrip: true })),
   ], [cats, activeTrips, inactiveTrips]);
 
   // Stable color per category/trip — sequential position, no hash collisions
@@ -507,7 +509,6 @@ export default function ExpenseTracker() {
     if (selTrip) periodExps = periodExps.filter(e => e.tripId === selTrip);
     const activeCatIds = new Set(periodExps.map(e => e.tripId ? `trip_${e.tripId}` : e.category));
     const result = visCats.filter(c => activeCatIds.has(c.id));
-    trips.filter(t => !t.archived && activeCatIds.has(`trip_${t.id}`)).forEach(t => result.push({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
     if (activeCatIds.has("uncategorized")) result.push(UNCAT);
     return result;
   }, [exps, visCats, trips, histPeriod, histMonth, histYear, selTrip]);
@@ -627,21 +628,22 @@ export default function ExpenseTracker() {
 
   const doSaveTrip = useCallback(async () => {
     if (!tName.trim()) return; hap();
+    const icon = tIcon.trim() || "\u2708\uFE0F";
     if (editTripId) {
-      const updatedTrip = { ...trips.find(t => t.id === editTripId), name: tName.trim(), budget: Math.round(Number(tBudg)) || 0 };
+      const updatedTrip = { ...trips.find(t => t.id === editTripId), name: tName.trim(), budget: Math.round(Number(tBudg)) || 0, icon };
       setTrips(p => p.map(t => t.id === editTripId ? updatedTrip : t));
       setEditTripId(null); sToast("Trip updated");
       supabase.from("trips").update(tripToDb(updatedTrip, userId)).eq("id", editTripId)
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
     } else {
-      const newTrip = { id: Date.now().toString(36), name: tName.trim(), budget: Math.round(Number(tBudg)) || 0, createdAt: new Date().toISOString(), pinned: false, archived: false };
+      const newTrip = { id: Date.now().toString(36), name: tName.trim(), budget: Math.round(Number(tBudg)) || 0, icon, createdAt: new Date().toISOString(), pinned: false, archived: false };
       setTrips(p => [...p, newTrip]);
       sToast("Trip created");
       supabase.from("trips").insert(tripToDb(newTrip, userId))
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
     }
-    setTName(""); setTBudg(""); setTripMod(false);
-  }, [tName, tBudg, editTripId, trips, userId, sToast]);
+    setTName(""); setTBudg(""); setTIcon("\u2708\uFE0F"); setTripMod(false);
+  }, [tName, tBudg, tIcon, editTripId, trips, userId, sToast]);
 
   const canDelTrip = useCallback((t) => hSince(t.createdAt) <= 48 || !exps.some(e => e.tripId === t.id), [exps]);
 
@@ -1129,7 +1131,7 @@ ${breakdownHtml}
   }, [exps, doEdit]);
 
   const getCL = (e) => { if (e.tripId) { const t = trips.find(x => x.id === e.tripId); return t ? t.name : "Trip"; } if (e.category === "uncategorized") return UNCAT.label; return cats.find(c => c.id === e.category)?.label || e.category; };
-  const getCI = (e) => { if (e.tripId) return "\u2708\uFE0F"; if (e.category === "uncategorized") return UNCAT.icon; return cats.find(c => c.id === e.category)?.icon || "?"; };
+  const getCI = (e) => { if (e.tripId) { const tr = trips.find(t => t.id === e.tripId); return tr?.icon || "\u2708\uFE0F"; } if (e.category === "uncategorized") return UNCAT.icon; return cats.find(c => c.id === e.category)?.icon || "?"; };
 
   // navTo: navigate to tab. Only clear filters when explicitly resetting (e.g., tapping ₹ logo → Add).
   // Navigating back to History preserves whatever filter the user had set.
@@ -1282,7 +1284,7 @@ ${breakdownHtml}
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <select value={fCat} onChange={e => setFCat(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Categories</option>
-                  {activeFilterCats.map(c => <option key={c.id} value={c.id}>{c.label}</option>)}
+                  {activeFilterCats.map(c => <option key={c.id} value={c.id}>{c.icon ? `${c.icon} ${c.label}` : c.label}</option>)}
                 </select>
                 <select value={fPay} onChange={e => setFPay(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Modes</option>
@@ -1492,7 +1494,7 @@ ${breakdownHtml}
                     <div style={{ fontSize: 10, color: G.t3, fontWeight: 600, marginBottom: 4, textTransform: "uppercase", letterSpacing: 0.6 }}>Trips (separate)</div>
                     {mindfulReport.trips.map(t => (
                       <div key={t.tripId} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 2 }}>
-                        <span>✈️ {t.name}</span>
+                        <span>{t.icon || "\u2708\uFE0F"} {t.name}</span>
                         <span style={{ fontWeight: 700 }}>{formatINR(t.spend)}</span>
                       </div>
                     ))}
@@ -1617,14 +1619,14 @@ ${breakdownHtml}
         {/* ══════ TRIPS LIST ══════ */}
         {dbReady && view === "trips" && !tripDet && (
           <div style={{ padding: "14px 16px" }}>
-            <button onClick={() => { setTripMod(true); setEditTripId(null); setTName(""); setTBudg(""); }} style={{ width: "100%", padding: "14px", borderRadius: 12, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t2, fontSize: 16, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>+ New Trip</button>
+            <button onClick={() => { setTripMod(true); setEditTripId(null); setTName(""); setTBudg(""); setTIcon("\u2708\uFE0F"); }} style={{ width: "100%", padding: "14px", borderRadius: 12, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t2, fontSize: 16, fontWeight: 600, cursor: "pointer", marginBottom: 16 }}>+ New Trip</button>
 
             {activeTrips.length > 0 && <div style={{ marginBottom: 20 }}>
               <div style={{ fontSize: 13, fontWeight: 700, color: G.tm, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 10 }}>Active</div>
               {activeTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? (tot / t.budget) * 100 : 0; const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
                 <div key={t.id} onClick={() => setTripDet(t.id)} style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, borderLeft: `4px solid ${G.bk}`, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
+                    <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.icon || "\u2708\uFE0F"} {t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
                     <span style={{ color: G.tm, fontSize: 18 }}>{"\u203A"}</span>
                   </div>
                   {t.budget > 0 && <div style={{ marginTop: 10 }}>
@@ -1645,7 +1647,7 @@ ${breakdownHtml}
               {inactiveTrips.map(t => { const te = exps.filter(e => e.tripId === t.id); const tot = te.reduce((s, e) => s + e.amount, 0); const pct = t.budget > 0 ? (tot / t.budget) * 100 : 0; const barCol = pct > 100 ? "#FF3B30" : pct > 90 ? "#FF3B30" : pct > 70 ? "#FF9500" : "#34C759"; return (
                 <div key={t.id} onClick={() => setTripDet(t.id)} style={{ background: G.bg2, borderRadius: 12, padding: "14px 16px", marginBottom: 8, borderLeft: `4px solid ${G.lt}`, cursor: "pointer", opacity: .7 }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
+                    <div><div style={{ fontWeight: 700, fontSize: 17 }}>{t.icon || "\u2708\uFE0F"} {t.name}</div><div style={{ color: G.t3, fontSize: 14, marginTop: 2 }}>{te.length} entries {"\u00B7"} {formatINR(tot)}{t.budget > 0 && ` / ${formatINR(t.budget)}`}</div></div>
                     <span style={{ color: G.tm, fontSize: 18 }}>{"\u203A"}</span>
                   </div>
                   {t.budget > 0 && <div style={{ marginTop: 10 }}>
@@ -1677,7 +1679,7 @@ ${breakdownHtml}
               <button onClick={() => { setTripDet(null); setConfDel(null); }} style={{ background: "none", border: "none", fontSize: 16, fontWeight: 600, color: G.t3, cursor: "pointer", padding: "4px 0", marginBottom: 10 }}>{"\u2190"} All Trips</button>
 
               <div style={{ background: G.bk, borderRadius: 14, padding: "20px 18px", color: G.wh, marginBottom: 14 }}>
-                <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -.5 }}>{trip.name}</div>
+                <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: -.5 }}>{trip.icon || "\u2708\uFE0F"} {trip.name}</div>
                 <div style={{ display: "flex", gap: 16, marginTop: 10, fontSize: 14, color: "#999" }}>
                   <span>{ti.cnt} expenses</span><span>{ti.d} day{ti.d !== 1 ? "s" : ""}</span>
                   <span style={{ fontWeight: 700, color: G.wh }}>~{formatINR(ti.avg)}/day</span>
@@ -1721,7 +1723,7 @@ ${breakdownHtml}
               </div>
 
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={() => { setEditTripId(trip.id); setTName(trip.name); setTBudg(trip.budget?.toString() || ""); setTripMod(true); }} style={{ flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Edit Trip</button>
+                <button onClick={() => { setEditTripId(trip.id); setTName(trip.name); setTBudg(trip.budget?.toString() || ""); setTIcon(trip.icon || "\u2708\uFE0F"); setTripMod(true); }} style={{ flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Edit Trip</button>
                 {cd ? (
                   confDel === tripDet
                     ? <button onClick={() => doDelTrip(trip)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.dk, color: G.wh, fontSize: 15, fontWeight: 700, cursor: "pointer" }}>Confirm Delete</button>
@@ -1768,7 +1770,10 @@ ${breakdownHtml}
           <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 36px" }} onClick={e => e.stopPropagation()}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 16px" }} />
             <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 18 }}>{editTripId ? "Edit Trip" : "New Trip"}</div>
-            <input type="text" placeholder="Trip name" value={tName} onChange={e => setTName(e.target.value)} style={{ width: "100%", padding: 14, borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 17, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2, marginBottom: 10 }} autoFocus />
+            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+              <input type="text" value={tIcon} onChange={e => setTIcon(e.target.value.slice(0, 4))} style={{ width: 54, padding: 14, borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 22, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2, textAlign: "center" }} />
+              <input type="text" placeholder="Trip name" value={tName} onChange={e => setTName(e.target.value)} style={{ flex: 1, padding: 14, borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 17, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2, minWidth: 0 }} autoFocus />
+            </div>
             <input type="tel" inputMode="numeric" placeholder="Budget (optional)" value={tBudg} onChange={e => setTBudg(e.target.value.replace(/[^0-9]/g, ""))} style={{ width: "100%", padding: 14, borderRadius: 12, border: `2px solid ${G.bdr}`, fontSize: 17, outline: "none", boxSizing: "border-box", color: G.t1, background: G.bg2, marginBottom: 16 }} />
             <button onClick={doSaveTrip} style={{ width: "100%", padding: 16, borderRadius: 14, border: "none", background: G.bk, color: G.wh, fontSize: 18, fontWeight: 700, cursor: "pointer" }}>{editTripId ? "Update Trip" : "Create Trip"}</button>
           </div>
@@ -2042,7 +2047,7 @@ ${breakdownHtml}
                 <div style={{ fontSize: 12, color: G.t3, fontWeight: 600, marginBottom: 6 }}>Trips</div>
                 {mindfulPopup.trips.map(t => (
                   <div key={t.tripId} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 3 }}>
-                    <span>✈️ {t.name}</span><span style={{ fontWeight: 700 }}>{formatINR(t.spend)}</span>
+                    <span>{t.icon || "\u2708\uFE0F"} {t.name}</span><span style={{ fontWeight: 700 }}>{formatINR(t.spend)}</span>
                   </div>
                 ))}
               </div>

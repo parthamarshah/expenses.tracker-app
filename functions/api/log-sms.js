@@ -136,12 +136,21 @@ export async function onRequestPost(context) {
   // Step 6: Parse merchant/note (bank-aware)
   const note = parseSmsNote(sms, bank);
 
-  // Load user's categories + trips in parallel for category resolution + shortcut response
-  const [{ data: prefsData }, { data: tripsData }] = await Promise.all([
+  const sevenDaysAgo = new Date(Date.now() - 7 * 864e5).toISOString();
+
+  // Load user's categories + trips + recent trip activity in parallel
+  const [{ data: prefsData }, { data: tripsData }, { data: recentTripExps }] = await Promise.all([
     supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
-    supabase.from("trips").select("id, name, pinned").eq("user_id", userId)
+    supabase.from("trips").select("id, name, icon, pinned, created_at").eq("user_id", userId)
       .eq("archived", false).order("pinned", { ascending: false }),
+    supabase.from("expenses").select("trip_id").eq("user_id", userId).not("trip_id", "is", null).gte("date", sevenDaysAgo).limit(100),
   ]);
+
+  // Active trips for shortcut response (keep full tripsData for trip-name resolution)
+  const recentTripIds = new Set((recentTripExps || []).map(e => e.trip_id));
+  const activeTrips = (tripsData || []).filter(t =>
+    t.pinned || recentTripIds.has(t.id) || new Date(t.created_at) >= new Date(sevenDaysAgo)
+  );
 
   let userCats = [
     { id: "personal",   label: "Personal", icon: "👤" },
@@ -183,13 +192,6 @@ export async function onRequestPost(context) {
   } else if (catLower.startsWith("trip_")) {
     tripId = category.replace(/^trip_/i, "");
     catId = "trip";
-  } else if (/^✈/.test(category)) {
-    // Trip by display name (e.g. "✈️ Goa Trip")
-    const tripName = category.replace(/^✈️?\s*/u, "").trim();
-    const { data: tripRow } = await supabase.from("trips")
-      .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
-    if (tripRow) { tripId = tripRow.id; catId = "trip"; }
-    else catId = userCats[0]?.id || "personal";
   } else {
     // Build dynamic map: id → id, label → id, and "icon label" → id for all user cats
     const catMap = {};
@@ -198,17 +200,28 @@ export async function onRequestPost(context) {
       catMap[c.label.toLowerCase()] = c.id;
       if (c.icon) catMap[`${c.icon} ${c.label}`.toLowerCase()] = c.id;
     });
-    // Always allow savings/investment alias
     const invCat = userCats.find(c => c.id === "investment");
     if (invCat) { catMap["savings"] = "investment"; catMap["investment"] = "investment"; }
-    catId = catMap[catLower] || userCats[0]?.id || "personal";
+
+    if (catMap[catLower]) {
+      catId = catMap[catLower];
+    } else if (/^[^\w\s]/.test(category)) {
+      // Emoji prefix not in catMap — try trip by display name (e.g. "🏖️ Beach Trip")
+      const tripName = category.replace(/^[^\w\s]+\s*/u, "").trim();
+      const { data: tripRow } = await supabase.from("trips")
+        .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
+      if (tripRow) { tripId = tripRow.id; catId = "trip"; }
+      else catId = userCats[0]?.id || "personal";
+    } else {
+      catId = catMap[catLower] || userCats[0]?.id || "personal";
+    }
   }
 
   // Build category labels + map for shortcut response (same format as /api/categories)
   const visibleCats = userCats.filter(c => !c.hidden);
   const catEntries = visibleCats.map(c => ({ id: c.id, label: `${c.icon} ${c.label}` }));
-  const tripEntries = (tripsData || []).map(t => ({ id: `trip_${t.id}`, label: `✈️ ${t.name}` }));
-  const allEntries = [...catEntries, ...tripEntries];
+  const tripEntries = activeTrips.map(t => ({ id: `trip_${t.id}`, label: `${t.icon || "\u2708\uFE0F"} ${t.name}` }));
+  const allEntries = [...catEntries, ...tripEntries, { id: "do_not_log", label: "\u274C Do not Log" }];
   const labels = allEntries.map(c => c.label);
   const categoriesMap = {};
   allEntries.forEach(c => { categoriesMap[c.label] = c.id; });

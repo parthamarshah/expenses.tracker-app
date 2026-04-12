@@ -16,7 +16,7 @@ export const dbToExp = (r) => ({
 });
 
 export const dbToTrip = (r) => ({
-  id: r.id, name: r.name, budget: r.budget,
+  id: r.id, name: r.name, budget: r.budget, icon: r.icon || "\u2708\uFE0F",
   createdAt: r.created_at, pinned: r.pinned, archived: r.archived,
 });
 
@@ -28,6 +28,6 @@ export const expToDb = (e, userId) => ({
 });
 
 export const tripToDb = (t, userId) => ({
-  id: t.id, user_id: userId, name: t.name, budget: t.budget || 0,
+  id: t.id, user_id: userId, name: t.name, budget: t.budget || 0, icon: t.icon || "\u2708\uFE0F",
   created_at: t.createdAt, pinned: t.pinned, archived: t.archived,
 });

@@ -66,15 +66,14 @@ export async function onRequestPost(context) {
   let tripId = null;
   const catLower = category.toLowerCase().trim();
 
+  // "Do not Log" → skip logging entirely
+  if (catLower === "do_not_log" || category === "\u274C Do not Log") {
+    return new Response(JSON.stringify({ ok: true, deleted: true, note: "Expense not logged" }), { headers: cors });
+  }
+
   if (catLower.startsWith("trip_")) {
     tripId = category.replace(/^trip_/i, "");
     catId = "trip";
-  } else if (catLower.startsWith("✈") || catLower.startsWith("✈️")) {
-    // Trip by display name (e.g. "✈️ Goa Trip")
-    const tripName = category.replace(/^✈️?\s*/u, "").trim();
-    const { data: tripRow } = await supabase.from("trips")
-      .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
-    if (tripRow) { tripId = tripRow.id; catId = "trip"; }
   } else {
     // Build dynamic map: id → id, label → id, "icon label" → id
     const catMap = {};
@@ -85,7 +84,18 @@ export async function onRequestPost(context) {
     });
     catMap["savings"] = "investment";
     catMap["investment"] = "investment";
-    catId = catMap[catLower] || userCats[0]?.id || "personal";
+
+    if (catMap[catLower]) {
+      catId = catMap[catLower];
+    } else if (/^[^\w\s]/.test(category)) {
+      // Emoji prefix not in catMap — try trip by display name (e.g. "🏖️ Beach Trip")
+      const tripName = category.replace(/^[^\w\s]+\s*/u, "").trim();
+      const { data: tripRow } = await supabase.from("trips")
+        .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
+      if (tripRow) { tripId = tripRow.id; catId = "trip"; }
+    } else {
+      catId = catMap[catLower] || userCats[0]?.id || "personal";
+    }
   }
 
   const expId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);

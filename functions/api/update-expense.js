@@ -70,14 +70,17 @@ export async function onRequestPost(context) {
   let tripId = null;
   const catLower = category.toLowerCase().trim();
 
+  // "Do not Log" → delete the expense entirely
+  if (catLower === "do_not_log" || category === "\u274C Do not Log") {
+    const { error: delErr } = await supabase.from("expenses")
+      .delete().eq("id", expenseId).eq("user_id", userId);
+    if (delErr) return new Response(JSON.stringify({ ok: false, error: delErr.message }), { status: 500, headers: cors });
+    return new Response(JSON.stringify({ ok: true, deleted: true, id: expenseId }), { headers: cors });
+  }
+
   if (catLower.startsWith("trip_")) {
     tripId = category.replace(/^trip_/i, "");
     catId = "trip";
-  } else if (/^✈/.test(category)) {
-    const tripName = category.replace(/^✈️?\s*/u, "").trim();
-    const { data: tripRow } = await supabase.from("trips")
-      .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
-    if (tripRow) { tripId = tripRow.id; catId = "trip"; }
   } else {
     const catMap = {};
     userCats.forEach(c => {
@@ -87,7 +90,17 @@ export async function onRequestPost(context) {
     });
     catMap["savings"] = "investment";
     catMap["investment"] = "investment";
-    catId = catMap[catLower] || userCats[0]?.id || "personal";
+
+    if (catMap[catLower]) {
+      catId = catMap[catLower];
+    } else if (/^[^\w\s]/.test(category)) {
+      const tripName = category.replace(/^[^\w\s]+\s*/u, "").trim();
+      const { data: tripRow } = await supabase.from("trips")
+        .select("id").eq("user_id", userId).ilike("name", tripName).maybeSingle();
+      if (tripRow) { tripId = tripRow.id; catId = "trip"; }
+    } else {
+      catId = catMap[catLower] || userCats[0]?.id || "personal";
+    }
   }
 
   // Update — .eq("user_id") prevents cross-user modification
