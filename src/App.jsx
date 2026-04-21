@@ -68,16 +68,15 @@ const S = {
 
 const safeParse = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
 
-// period: { scope: "month"|"year"|"all", year?, month? }
+// period: { scope: "month"|"year", year, month? }
 const inPeriodFor = (e, period) => {
-  if (period.scope === "all") return true;
   const d = new Date(e.date);
   if (period.scope === "year") return d.getFullYear() === period.year;
   return d.getMonth() === period.month && d.getFullYear() === period.year;
 };
 
-const periodLabel = (period) => period.scope === "all" ? "All Time"
-  : period.scope === "year" ? String(period.year)
+const periodLabel = (period) => period.scope === "year"
+  ? String(period.year)
   : new Date(period.year, period.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
 
 // ── Mindful Insights helpers (pure, client-side only) ─────────────────────────
@@ -250,13 +249,13 @@ export default function ExpenseTracker() {
   const [detMod,    setDetMod]    = useState(null);
   const [tripDet,   setTripDet]   = useState(null);
   const [confDel,   setConfDel]   = useState(null); // trip deletion confirm
-  // Insights period: "month" | "year" | "all"
+  // Insights period: "month" | "year"
   const [insExTrips,  setInsExTrips]  = useState(false); // exclude trips from insights
   const [insPeriod,   setInsPeriod]   = useState("month");
   const [insMonth,    setInsMonth]    = useState(() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; });
   const [insYear,     setInsYear]     = useState(() => new Date().getFullYear());
-  // History period: "all" | "month" | "year" — persisted to localStorage
-  const [histPeriod,  setHistPeriod]  = useState(() => { try { return localStorage.getItem("histPeriod") || "month"; } catch { return "month"; } });
+  // History period: "month" | "year" — persisted to localStorage (legacy "all" coerced to "month")
+  const [histPeriod,  setHistPeriod]  = useState(() => { try { const s = localStorage.getItem("histPeriod"); return s === "year" ? "year" : "month"; } catch { return "month"; } });
   const [histMonth,   setHistMonth]   = useState(() => { const n = new Date(); try { const s = localStorage.getItem("histMonth"); if (s) return JSON.parse(s); } catch {} return { year: n.getFullYear(), month: n.getMonth() }; });
   const [histYear,    setHistYear]    = useState(() => { try { const s = localStorage.getItem("histYear"); if (s) return Number(s); } catch {} return new Date().getFullYear(); });
   const [editDate,  setEditDate]  = useState("");
@@ -270,7 +269,6 @@ export default function ExpenseTracker() {
   const [newCatIcon, setNewCatIcon] = useState("");
   const [newCatLabel,setNewCatLabel]= useState("");
   const [dragIdx,    setDragIdx]    = useState(null); // index of cat being moved (tap-to-reorder)
-  const [setupTab,   setSetupTab]   = useState("ios"); // "ios" | "android"
   const [banks,      setBanks]      = useState([]);
   const [bankMod,    setBankMod]    = useState(false);
   const [editBanks,  setEditBanks]  = useState([]);
@@ -377,6 +375,9 @@ export default function ExpenseTracker() {
               mindfulPopupTimer = setTimeout(() => {
                 if (cancelled) return;
                 const report = buildMindfulReport(mappedExps, { scope: "month", ...targetMonth }, mappedTrips, mPrefs);
+                // Mark "shown this month" at show-time so closing the tab without
+                // dismissing still prevents re-open on next load.
+                try { localStorage.setItem(`lastMindfulReportMonth_${userId}`, currKey); } catch {}
                 setMindfulPopup(report);
               }, 800);
             }
@@ -474,12 +475,12 @@ export default function ExpenseTracker() {
   }, [exps]);
 
   const activeTrips = useMemo(() =>
-    trips.filter(t => !t.archived).filter(t => getTAct(t).isActive || t.pinned)
+    trips.filter(t => !t.archived && !t.hidden).filter(t => getTAct(t).isActive || t.pinned)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
   [trips, getTAct]);
 
   const inactiveTrips = useMemo(() =>
-    trips.filter(t => !t.archived).filter(t => !getTAct(t).isActive && !t.pinned)
+    trips.filter(t => !t.archived).filter(t => t.hidden || (!getTAct(t).isActive && !t.pinned))
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)),
   [trips, getTAct]);
 
@@ -594,17 +595,20 @@ export default function ExpenseTracker() {
       supabase.from("expenses").update(expToDb(updated, userId)).eq("id", editId)
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
     } else {
+      const newDate = editDate
+        ? new Date(editDate + "T12:00:00").toISOString()
+        : new Date().toISOString();
       const newExp = {
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         amount: v, note: note.trim(), category: tid ? "trip" : cat,
-        payMode: pay, date: new Date().toISOString(), tripId: tid,
+        payMode: pay, date: newDate, tripId: tid,
       };
       setExps(p => [newExp, ...p]);
       sToast(`${formatINR(v)} saved`);
       supabase.from("expenses").insert(expToDb(newExp, userId))
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
     }
-    setAmt(""); setNote("");
+    setAmt(""); setNote(""); setEditDate("");
     setTimeout(() => aRef.current?.focus(), 50);
   }, [amt, cat, note, pay, editId, editDate, exps, userId, sToast]);
 
@@ -636,7 +640,7 @@ export default function ExpenseTracker() {
       supabase.from("trips").update(tripToDb(updatedTrip, userId)).eq("id", editTripId)
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
     } else {
-      const newTrip = { id: Date.now().toString(36), name: tName.trim(), budget: Math.round(Number(tBudg)) || 0, icon, createdAt: new Date().toISOString(), pinned: false, archived: false };
+      const newTrip = { id: Date.now().toString(36), name: tName.trim(), budget: Math.round(Number(tBudg)) || 0, icon, createdAt: new Date().toISOString(), pinned: false, archived: false, hidden: false };
       setTrips(p => [...p, newTrip]);
       sToast("Trip created");
       supabase.from("trips").insert(tripToDb(newTrip, userId))
@@ -672,16 +676,32 @@ export default function ExpenseTracker() {
       .then(({ error }) => { if (error) sToast("Sync error", "err"); });
   }, [sToast]);
 
+  // Hide wins over pin: marking a trip hidden also clears pinned.
+  const hideT = useCallback((id) => {
+    setTrips(p => p.map(t => t.id === id ? { ...t, hidden: true, pinned: false } : t)); sToast("Trip hidden");
+    supabase.from("trips").update({ hidden: true, pinned: false }).eq("id", id)
+      .then(({ error }) => { if (error) sToast("Sync error", "err"); });
+  }, [sToast]);
+
+  const unhideT = useCallback((id) => {
+    setTrips(p => p.map(t => t.id === id ? { ...t, hidden: false } : t)); sToast("Trip restored");
+    supabase.from("trips").update({ hidden: false }).eq("id", id)
+      .then(({ error }) => { if (error) sToast("Sync error", "err"); });
+  }, [sToast]);
+
   // ── Filtered list ─────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
     let l = [...exps];
-    // Date range filter
-    if (histPeriod === "month") l = l.filter(e => { const d = new Date(e.date); return d.getMonth() === histMonth.month && d.getFullYear() === histMonth.year; });
-    else if (histPeriod === "year") l = l.filter(e => new Date(e.date).getFullYear() === histYear);
-    if (selTrip) l = l.filter(e => e.tripId === selTrip);
-    else if (fCat !== "all") {
-      if (fCat.startsWith("trip_")) l = l.filter(e => e.tripId === fCat.replace("trip_", ""));
-      else l = l.filter(e => e.category === fCat && !e.tripId);
+    // Trip view shows all trip entries regardless of the History period filter.
+    if (selTrip) {
+      l = l.filter(e => e.tripId === selTrip);
+    } else {
+      if (histPeriod === "month") l = l.filter(e => { const d = new Date(e.date); return d.getMonth() === histMonth.month && d.getFullYear() === histMonth.year; });
+      else if (histPeriod === "year") l = l.filter(e => new Date(e.date).getFullYear() === histYear);
+      if (fCat !== "all") {
+        if (fCat.startsWith("trip_")) l = l.filter(e => e.tripId === fCat.replace("trip_", ""));
+        else l = l.filter(e => e.category === fCat && !e.tripId);
+      }
     }
     if (fPay !== "all") l = l.filter(e => e.payMode === fPay);
     if (sq.trim()) {
@@ -989,20 +1009,16 @@ ${breakdownHtml}
   }, [editBanks, userId, sToast]);
 
   // ── Insights ──────────────────────────────────────────────────────────────
-  const insAsPeriod = useMemo(() => insPeriod === "all"
-    ? { scope: "all" }
-    : insPeriod === "year"
-      ? { scope: "year", year: insYear }
-      : { scope: "month", year: insMonth.year, month: insMonth.month },
+  const insAsPeriod = useMemo(() => insPeriod === "year"
+    ? { scope: "year", year: insYear }
+    : { scope: "month", year: insMonth.year, month: insMonth.month },
   [insPeriod, insMonth, insYear]);
 
   const insPeriodLabel = useMemo(() => periodLabel(insAsPeriod), [insAsPeriod]);
 
-  const mindfulScopeKey = useMemo(() => insAsPeriod.scope === "all"
-    ? "all"
-    : insAsPeriod.scope === "year"
-      ? `year-${insAsPeriod.year}`
-      : `month-${insAsPeriod.year}-${insAsPeriod.month}`,
+  const mindfulScopeKey = useMemo(() => insAsPeriod.scope === "year"
+    ? `year-${insAsPeriod.year}`
+    : `month-${insAsPeriod.year}-${insAsPeriod.month}`,
   [insAsPeriod]);
 
   const isMindfulReviewed = (mindfulPrefs.reviewedScopes || []).includes(mindfulScopeKey);
@@ -1067,12 +1083,11 @@ ${breakdownHtml}
   }, [insPeriod]);
 
   const cyclePeriod = useCallback(() => {
-    setInsPeriod(p => p === "month" ? "year" : p === "year" ? "all" : "month");
+    setInsPeriod(p => p === "month" ? "year" : "month");
   }, []);
 
   // History period helpers
   const histPeriodLabel = useMemo(() => {
-    if (histPeriod === "all") return "All Time";
     if (histPeriod === "year") return histYear.toString();
     return new Date(histMonth.year, histMonth.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
   }, [histMonth, histYear, histPeriod]);
@@ -1097,7 +1112,7 @@ ${breakdownHtml}
 
   const cycleHistPeriod = useCallback(() => {
     setHistPeriod(p => {
-      const next = p === "all" ? "month" : p === "month" ? "year" : "all";
+      const next = p === "month" ? "year" : "month";
       try { localStorage.setItem("histPeriod", next); } catch {}
       return next;
     });
@@ -1136,7 +1151,7 @@ ${breakdownHtml}
   // navTo: navigate to tab. Only clear filters when explicitly resetting (e.g., tapping ₹ logo → Add).
   // Navigating back to History preserves whatever filter the user had set.
   const navTo = (t) => { hap(); setSw({ id: null, dir: null }); setSwipeConf(null); setView(t); };
-  const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setHistPeriod("all"); setView("list"); };
+  const viewTH = (tid) => { setSelTrip(tid); setFCat("all"); setFPay("all"); setSq(""); setView("list"); };
 
   const B = (sel, children, onClick, extra = {}) => (
     <button onClick={onClick} style={{ padding: "7px 10px", borderRadius: 18, cursor: "pointer", fontSize: 13, fontWeight: sel ? 700 : 500, border: `2px solid ${sel ? G.bk : G.bdr}`, background: sel ? G.bk : G.bg, color: sel ? G.wh : G.t2, ...extra }}>{children}</button>
@@ -1222,21 +1237,22 @@ ${breakdownHtml}
             </div>
 
             <div>
-              {editId && (() => {
+              {(() => {
                 const today = new Date().toISOString().slice(0, 10);
+                const active = editDate || today;
                 const shiftDay = (n) => {
-                  const d = new Date(editDate + "T12:00:00"); d.setDate(d.getDate() + n);
+                  const d = new Date(active + "T12:00:00"); d.setDate(d.getDate() + n);
                   const s = d.toISOString().slice(0, 10); if (s <= today) setEditDate(s);
                 };
-                const lbl = (() => { const d = new Date(editDate + "T12:00:00"); if (editDate === today) return "Today"; const y = new Date(); y.setDate(y.getDate() - 1); if (sameDay(d, y)) return "Yesterday"; return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" }); })();
+                const lbl = (() => { const d = new Date(active + "T12:00:00"); if (active === today) return "Today"; const y = new Date(); y.setDate(y.getDate() - 1); if (sameDay(d, y)) return "Yesterday"; return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" }); })();
                 return (
                   <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "4px 4px", marginBottom: 6 }}>
                     <button onClick={() => shiftDay(-1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>‹</button>
                     <div style={{ flex: 1, textAlign: "center", fontSize: 14, fontWeight: 600, color: G.t1, position: "relative", cursor: "pointer" }}>
                       {lbl}
-                      <input type="date" value={editDate} max={today} onChange={e => { if (e.target.value && e.target.value <= today) setEditDate(e.target.value); }} style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", fontSize: 16 }} />
+                      <input type="date" value={active} max={today} onChange={e => { if (e.target.value && e.target.value <= today) setEditDate(e.target.value); }} style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", fontSize: 16 }} />
                     </div>
-                    <button onClick={() => shiftDay(1)} disabled={editDate >= today} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: editDate >= today ? "default" : "pointer", color: editDate >= today ? G.tm : G.t1, fontWeight: 600 }}>›</button>
+                    <button onClick={() => shiftDay(1)} disabled={active >= today} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: active >= today ? "default" : "pointer", color: active >= today ? G.tm : G.t1, fontWeight: 600 }}>›</button>
                   </div>
                 );
               })()}
@@ -1270,13 +1286,9 @@ ${breakdownHtml}
 
             {!selTrip && (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, background: G.bg2, borderRadius: 12, padding: "4px 4px" }}>
-                {histPeriod !== "all" ? (
-                  <button onClick={() => shiftHistPeriod(-1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u2039"}</button>
-                ) : <div style={{ width: 36 }} />}
+                <button onClick={() => shiftHistPeriod(-1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u2039"}</button>
                 <button onClick={cycleHistPeriod} style={{ flex: 1, padding: "7px 0", border: "none", background: "transparent", fontSize: 14, fontWeight: 700, cursor: "pointer", color: G.t1, textAlign: "center" }}>{histPeriodLabel}</button>
-                {histPeriod !== "all" ? (
-                  <button onClick={() => shiftHistPeriod(1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u203A"}</button>
-                ) : <div style={{ width: 36 }} />}
+                <button onClick={() => shiftHistPeriod(1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>{"\u203A"}</button>
               </div>
             )}
 
@@ -1373,24 +1385,20 @@ ${breakdownHtml}
 
             {/* Period navigator */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, background: G.bg2, borderRadius: 12, padding: "4px 4px" }}>
-              {insPeriod !== "all" ? (
-                <button onClick={() => shiftPeriod(-1)}
-                  style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>‹</button>
-              ) : <div style={{ width: 36 }} />}
+              <button onClick={() => shiftPeriod(-1)}
+                style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>‹</button>
               <button onClick={cyclePeriod}
                 style={{ flex: 1, padding: "7px 0", border: "none", background: "transparent", fontSize: 14, fontWeight: 700, cursor: "pointer", color: G.t1, textAlign: "center" }}>
                 {insPeriodLabel}
               </button>
-              {insPeriod !== "all" ? (
-                <button onClick={() => shiftPeriod(1)}
-                  style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>›</button>
-              ) : <div style={{ width: 36 }} />}
+              <button onClick={() => shiftPeriod(1)}
+                style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>›</button>
             </div>
 
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
               <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bk, color: G.wh }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: "#888", letterSpacing: 1, textTransform: "uppercase" }}>{insPeriod === "all" ? "All Time" : "Expenses"}</div>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#888", letterSpacing: 1, textTransform: "uppercase" }}>Expenses</div>
                   <div style={{ fontSize: 10, color: "#666" }}>{ins.mc} entries</div>
                 </div>
                 <div style={{ fontSize: 21, fontWeight: 800, marginTop: 2, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
@@ -1399,7 +1407,7 @@ ${breakdownHtml}
               <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bg2, border: `1.5px solid ${G.bdr}` }}>
                 <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
                   <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase" }}>Savings</div>
-                  <div style={{ fontSize: 10, color: G.tm }}>{insPeriod === "all" ? "all time" : insPeriod === "year" ? insYear : new Date(insMonth.year, insMonth.month).toLocaleDateString("en-IN", { month: "short" })}</div>
+                  <div style={{ fontSize: 10, color: G.tm }}>{insPeriod === "year" ? insYear : new Date(insMonth.year, insMonth.month).toLocaleDateString("en-IN", { month: "short" })}</div>
                 </div>
                 <div style={{ fontSize: 21, fontWeight: 800, marginTop: 2, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
               </div>
@@ -1671,7 +1679,6 @@ ${breakdownHtml}
         {dbReady && view === "trips" && tripDet && (() => {
           const trip = trips.find(t => t.id === tripDet);
           if (!trip) return null;
-          const act = getTAct(trip);
           const ti = getTI(tripDet);
           const cd = canDelTrip(trip);
           return (
@@ -1712,14 +1719,19 @@ ${breakdownHtml}
                 ))}
               </div>
 
-              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <button onClick={() => viewTH(tripDet)} style={{ flex: 1, padding: "13px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, fontSize: 15, fontWeight: 700, cursor: "pointer" }}>View All Entries</button>
-                {act.isActive && trip.pinned && (
-                  <button onClick={() => unpinT(tripDet)} style={{ padding: "13px 18px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Unpin</button>
+                {!trip.hidden && (trip.pinned
+                  ? <button onClick={() => unpinT(tripDet)} style={{ padding: "13px 18px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Unpin</button>
+                  : <button onClick={() => pinT(tripDet)} style={{ padding: "13px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Pin</button>
                 )}
-                {!act.isActive && !trip.pinned && (
-                  <button onClick={() => pinT(tripDet)} style={{ padding: "13px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 15, fontWeight: 600, cursor: "pointer" }}>Pin</button>
-                )}
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                {trip.hidden
+                  ? <button onClick={() => unhideT(tripDet)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Restore to Active</button>
+                  : <button onClick={() => hideT(tripDet)} style={{ flex: 1, padding: "12px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Mark Inactive</button>
+                }
               </div>
 
               <div style={{ display: "flex", gap: 8 }}>
@@ -1820,97 +1832,49 @@ ${breakdownHtml}
               </button>
             )}
 
-            {/* Platform Tabs */}
-            <div style={{ display: "flex", background: G.bg2, borderRadius: 10, padding: 3, marginBottom: 16 }}>
-              {[["ios", "iPhone"], ["android", "Android"]].map(([id, label]) => (
-                <button key={id} onClick={() => setSetupTab(id)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 14, fontWeight: 700, background: setupTab === id ? G.bk : "transparent", color: setupTab === id ? G.wh : G.t3 }}>{label}</button>
-              ))}
-            </div>
-
             {/* iPhone Setup */}
-            {setupTab === "ios" && (
-              <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>iPhone Shortcuts Setup</div>
+            <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
+              <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>iPhone Shortcuts Setup</div>
 
-                <div style={{ marginBottom: 14 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add Shortcuts</div>
-                  <div style={{ marginBottom: 6 }}>Add both shortcuts to your iPhone. On first run each will ask for your key once, then save it to <b>iCloud Drive → Shortcuts</b> — never asked again.</div>
-                  <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
-                    <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
-                      style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
-                      Bank Expense {"\u2192"}
-                    </a>
-                    <a href={CASH_SHORTCUT_URL} target="_blank" rel="noopener noreferrer"
-                      style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
-                      Cash Expense {"\u2192"}
-                    </a>
-                  </div>
-                  <div style={{ fontSize: 12, color: G.t3, marginTop: 4, lineHeight: 1.5 }}>
-                    <b>Bank Expense</b> — auto-logs bank SMS debits. Set up an automation so it runs silently on every bank message.{"\n"}
-                    <b>Cash Expense</b> — tap to manually log a cash spend: enter amount, pick category, add note.
-                  </div>
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 1: Add Shortcuts</div>
+                <div style={{ marginBottom: 6 }}>Add both shortcuts to your iPhone. On first run each will ask for your key once, then save it to <b>iCloud Drive → Shortcuts</b> — never asked again.</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                  <a href={SHORTCUT_ICLOUD_URL} target="_blank" rel="noopener noreferrer"
+                    style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                    Bank Expense {"\u2192"}
+                  </a>
+                  <a href={CASH_SHORTCUT_URL} target="_blank" rel="noopener noreferrer"
+                    style={{ flex: 1, padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 13, fontWeight: 700, textAlign: "center", textDecoration: "none", cursor: "pointer" }}>
+                    Cash Expense {"\u2192"}
+                  </a>
                 </div>
-
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Automate Bank SMS</div>
-                  <div>Open <b>Shortcuts</b> app {"\u2192"} <b>Automation</b> tab {"\u2192"} <b>+</b></div>
-                  <div>Select <b>Message</b> trigger</div>
-                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
-                    <div><b>Sender contains:</b> your bank SMS ID (e.g. "HDFCBK")</div>
-                    <div><b>Message contains:</b> "debited"</div>
-                  </div>
-                  <div style={{ marginTop: 6 }}>Set the action:</div>
-                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 4, fontSize: 12, lineHeight: 1.7 }}>
-                    <div><b>Run Shortcut</b> {"\u2192"} select "Bank Expense"</div>
-                    <div><b>Input:</b> Message (the SMS body)</div>
-                  </div>
-                  <div style={{ marginTop: 6 }}>Turn off <b>"Ask Before Running"</b></div>
-                </div>
-
-                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10, lineHeight: 1.5 }}>
-                  Tip: Add one automation per bank — they all use the same "Bank Expense" shortcut. Your key is stored once in iCloud Drive and shared across both shortcuts automatically.
+                <div style={{ fontSize: 12, color: G.t3, marginTop: 4, lineHeight: 1.5 }}>
+                  <b>Bank Expense</b> — auto-logs bank SMS debits. Set up an automation so it runs silently on every bank message.{"\n"}
+                  <b>Cash Expense</b> — tap to manually log a cash spend: enter amount, pick category, add note.
                 </div>
               </div>
-            )}
 
-            {/* Android Setup */}
-            {setupTab === "android" && (
-              <div style={{ background: G.bg2, borderRadius: 12, padding: "16px 16px", fontSize: 13, color: G.t2, lineHeight: 1.8 }}>
-                <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>Android Setup (MacroDroid)</div>
-
-                <a href="https://play.google.com/store/apps/details?id=com.arlosoft.macrodroid" target="_blank" rel="noopener noreferrer"
-                  style={{ display: "block", padding: "12px", borderRadius: 10, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 14, fontWeight: 700, textAlign: "center", textDecoration: "none", marginBottom: 12, cursor: "pointer" }}>
-                  Get MacroDroid (Free) {"\u2192"}
-                </a>
-
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Setup Steps</div>
-                  <div>1. Install <b>MacroDroid</b> from Play Store</div>
-                  <div>2. Tap <b>Add Macro</b> {"\u2192"} <b>Trigger</b> {"\u2192"} <b>SMS Received</b></div>
-                  <div>3. Set sender filter to your bank (e.g. "HDFCBK")</div>
-                  <div>4. Optionally add content filter: "debited"</div>
-                  <div>5. <b>Action</b> {"\u2192"} <b>HTTP Request</b></div>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>Step 2: Automate Bank SMS</div>
+                <div>Open <b>Shortcuts</b> app {"\u2192"} <b>Automation</b> tab {"\u2192"} <b>+</b></div>
+                <div>Select <b>Message</b> trigger</div>
+                <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 6, fontSize: 12, lineHeight: 1.7 }}>
+                  <div><b>Sender contains:</b> your bank SMS ID (e.g. "HDFCBK")</div>
+                  <div><b>Message contains:</b> "debited"</div>
                 </div>
-
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ fontWeight: 700, color: G.t1, marginBottom: 4 }}>HTTP Request Settings</div>
-                  <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", fontSize: 12, lineHeight: 1.7 }}>
-                    <div><b>Method:</b> POST</div>
-                    <div><b>URL:</b> <span style={{ fontFamily: "monospace", fontSize: 11 }}>{API_BASE}/api/log-sms</span></div>
-                    <div><b>Content-Type:</b> application/json</div>
-                    <div><b>Body:</b></div>
-                    <div style={{ fontFamily: "monospace", fontSize: 11, background: G.bg2, padding: "8px", borderRadius: 6, marginTop: 4, wordBreak: "break-all" }}>
-                      {`{"sms":"[sms_body]","key":"${userKey || "YOUR_KEY"}","category":"personal"}`}
-                    </div>
-                    <div style={{ fontSize: 11, color: G.t3, marginTop: 4 }}>[sms_body] is a MacroDroid built-in variable for SMS text.</div>
-                  </div>
+                <div style={{ marginTop: 6 }}>Set the action:</div>
+                <div style={{ background: G.bg, borderRadius: 8, padding: "10px 12px", marginTop: 4, fontSize: 12, lineHeight: 1.7 }}>
+                  <div><b>Run Shortcut</b> {"\u2192"} select "Bank Expense"</div>
+                  <div><b>Input:</b> Message (the SMS body)</div>
                 </div>
-
-                <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10 }}>
-                  Note: MacroDroid free tier allows 5 macros. You only need 1 for this. For category selection, use "personal" as default — or set up a Tasker/MacroDroid popup to pick before sending.
-                </div>
+                <div style={{ marginTop: 6 }}>Turn off <b>"Ask Before Running"</b></div>
               </div>
-            )}
+
+              <div style={{ fontSize: 12, color: G.t3, borderTop: `1px solid ${G.lt}`, paddingTop: 10, lineHeight: 1.5 }}>
+                Tip: Add one automation per bank — they all use the same "Bank Expense" shortcut. Your key is stored once in iCloud Drive and shared across both shortcuts automatically.
+              </div>
+            </div>
 
             {/* API Endpoint */}
             <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 10, padding: "10px 14px", marginTop: 14, gap: 8 }}>
@@ -2068,8 +2032,8 @@ ${breakdownHtml}
       {/* ══════ PROFILE MODAL ══════ */}
       {profileMod && (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }} onClick={() => { setProfileMod(false); setDelConfirm(false); }}>
-          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{ width: "100%", maxWidth: 390, background: G.bg, borderRadius: "20px 20px 0 0", padding: "0 20px 40px", maxHeight: "85vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+            <div style={{ position: "sticky", top: 0, background: G.bg, zIndex: 2, display: "flex", alignItems: "center", justifyContent: "space-between", paddingTop: 14, paddingBottom: 8, marginBottom: 6, borderBottom: `1px solid ${G.lt}` }}>
               <div style={{ width: 30 }} />
               <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt }} />
               <button onClick={() => { setProfileMod(false); setDelConfirm(false); }} style={{ background: "none", border: "none", fontSize: 20, color: G.t3, cursor: "pointer", padding: "2px 6px", lineHeight: 1 }}>{"\u2715"}</button>

@@ -48,15 +48,16 @@ export async function onRequestGet(context) {
   // Fetch prefs + trips + recent trip activity in parallel
   const [{ data: prefsData }, { data: tripsData }, { data: recentTripExps }] = await Promise.all([
     supabase.from("user_prefs").select("cats_json").eq("user_id", userId).maybeSingle(),
-    supabase.from("trips").select("id, name, icon, pinned, created_at").eq("user_id", userId).eq("archived", false).order("pinned", { ascending: false }).order("created_at", { ascending: false }),
+    supabase.from("trips").select("id, name, icon, pinned, hidden, created_at").eq("user_id", userId).eq("archived", false).order("pinned", { ascending: false }).order("created_at", { ascending: false }),
     supabase.from("expenses").select("trip_id").eq("user_id", userId).not("trip_id", "is", null).gte("date", sevenDaysAgo).limit(100),
   ]);
 
   // Filter to active trips only (pinned, recent activity, or recently created)
+  // Hidden trips are always excluded (user explicitly marked them inactive).
   const recentTripIds = new Set((recentTripExps || []).map(e => e.trip_id));
-  const activeTrips = (tripsData || []).filter(t =>
-    t.pinned || recentTripIds.has(t.id) || new Date(t.created_at) >= new Date(sevenDaysAgo)
-  );
+  const activeTrips = (tripsData || [])
+    .filter(t => !t.hidden)
+    .filter(t => t.pinned || recentTripIds.has(t.id) || new Date(t.created_at) >= new Date(sevenDaysAgo));
 
   // Resolve user's categories from user_prefs.cats_json
   let userCats = OLD_DEFAULT_CATEGORIES;

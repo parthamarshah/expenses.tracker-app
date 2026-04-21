@@ -18,6 +18,7 @@ export const dbToExp = (r) => ({
 export const dbToTrip = (r) => ({
   id: r.id, name: r.name, budget: r.budget, icon: r.icon || "\u2708\uFE0F",
   createdAt: r.created_at, pinned: r.pinned, archived: r.archived,
+  hidden: r.hidden === true,
 });
 
 // App (camelCase) → DB (snake_case)
@@ -30,4 +31,5 @@ export const expToDb = (e, userId) => ({
 export const tripToDb = (t, userId) => ({
   id: t.id, user_id: userId, name: t.name, budget: t.budget || 0, icon: t.icon || "\u2708\uFE0F",
   created_at: t.createdAt, pinned: t.pinned, archived: t.archived,
+  hidden: t.hidden === true,
 });
