@@ -1917,9 +1917,7 @@ ${breakdownHtml}
                 {c.id === "investment" && <div style={{ fontSize: 11, color: "#E08700", marginBottom: 10, marginLeft: 46, lineHeight: 1.3 }}>This category tracks savings & investments. Name it accordingly.</div>}
               </div>);
             })}
-            {editCats.length < 8 && (
-              <button onClick={() => setEditCats(p => [...p, { id: "custom_" + Date.now().toString(36), label: "", icon: "📌", hidden: false }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Category</button>
-            )}
+            <button onClick={() => setEditCats(p => [...p, { id: "custom_" + Date.now().toString(36), label: "", icon: "📌", hidden: false }])} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px dashed ${G.bdr}`, background: "transparent", color: G.t3, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 4 }}>+ Add Category</button>
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={() => setEditCats(DEFAULT_CATEGORIES.map(c => ({ ...c })))} style={{ padding: "12px 18px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t3, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Reset</button>
               <button onClick={saveCustomCats} disabled={catSaving} style={{ flex: 1, padding: "12px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>{catSaving ? "Saving…" : "Save"}</button>
