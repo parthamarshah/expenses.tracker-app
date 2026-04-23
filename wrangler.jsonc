@@ -1,14 +1,16 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "expenses-tracker-app",
+  "main": "src/worker.js",
   "compatibility_date": "2026-04-23",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "observability": {
     "enabled": true
   },
   "assets": {
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  },
-  "compatibility_flags": [
-    "nodejs_compat"
-  ]
+  }
 }
