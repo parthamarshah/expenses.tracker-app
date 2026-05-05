@@ -230,6 +230,7 @@ export default function ExpenseTracker() {
   const [dbReady,   setDbReady]   = useState(false);
   const [view,      setView]      = useState("list");
   const [amt,       setAmt]       = useState("");
+  const [amtFocused, setAmtFocused] = useState(false);
   const [note,      setNote]      = useState("");
   const [cat,       setCat]       = useState("personal");
   const [pay,       setPay]       = useState("cash");
@@ -1200,9 +1201,9 @@ ${breakdownHtml}
         {/* ══════ ADD ══════ */}
         {dbReady && view === "add" && (
           <div style={{ padding: "8px 18px 16px", display: "flex", flexDirection: "column", gap: 16 }}>
-            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", padding: "10px 0 4px" }}>
-              <span style={{ fontSize: 32, fontWeight: 300, color: G.tm, marginRight: 2 }}>{"\u20B9"}</span>
-              <input ref={aRef} type="tel" inputMode="numeric" pattern="[0-9]*" placeholder="0" value={amt} onChange={e => setAmt(e.target.value.replace(/[^0-9]/g, ""))} onKeyDown={e => { if (e.key === "Enter") doSave(); }} style={{ fontSize: 46, fontWeight: 800, border: "none", outline: "none", width: "55%", textAlign: "center", color: G.t1, background: "transparent", letterSpacing: -2, caretColor: G.md }} autoFocus autoComplete="off" />
+            <div style={{ display: "flex", alignItems: "baseline", justifyContent: "center", padding: "10px 0 10px", borderBottom: `2px solid ${amtFocused ? G.bk : G.bdr}`, transition: "border-color .15s ease" }}>
+              <span style={{ fontSize: 32, fontWeight: 400, color: G.tm, marginRight: 2 }}>{"\u20B9"}</span>
+              <input ref={aRef} type="tel" inputMode="numeric" pattern="[0-9]*" placeholder="0" value={amt} onChange={e => setAmt(e.target.value.replace(/[^0-9]/g, ""))} onFocus={() => setAmtFocused(true)} onBlur={() => setAmtFocused(false)} onKeyDown={e => { if (e.key === "Enter") doSave(); }} style={{ fontSize: 46, fontWeight: 800, border: "none", outline: "none", width: "55%", textAlign: "center", color: G.t1, background: "transparent", letterSpacing: -2, caretColor: G.md }} autoFocus autoComplete="off" />
               {amt !== "" && <button onClick={() => { hap(); setAmt(""); aRef.current?.focus(); }} tabIndex={-1} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: G.tm, padding: "0 4px", lineHeight: 1 }}>{"\u2715"}</button>}
             </div>
 
@@ -1212,10 +1213,11 @@ ${breakdownHtml}
                 <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, textTransform: "uppercase", letterSpacing: 1.5 }}>Category</div>
                 <button onClick={openCatMod} title="Customise categories" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: G.tm, padding: "2px 4px", lineHeight: 1, fontWeight: 600 }}>✎ edit</button>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 5 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
                 {addCats.map(c => (
-                  <button key={c.id} onClick={() => { hap(); setCat(c.id); }} style={{ padding: "8px 4px", borderRadius: 12, cursor: "pointer", fontSize: 12, fontWeight: cat === c.id ? 700 : 500, border: `2px solid ${cat === c.id ? G.bk : G.bdr}`, background: cat === c.id ? G.bk : G.bg, color: cat === c.id ? G.wh : G.t2, textAlign: "center", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...gujStyle(c.label, 12) }}>
-                    {c.icon ? `${c.icon} ${c.label}` : c.label}
+                  <button key={c.id} onClick={() => { hap(); setCat(c.id); }} style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 4, minHeight: 64, padding: "12px 6px", borderRadius: 12, cursor: "pointer", fontWeight: cat === c.id ? 700 : 500, border: `2px solid ${cat === c.id ? G.bk : G.bdr}`, background: cat === c.id ? G.bk : G.bg, color: cat === c.id ? G.wh : G.t2, textAlign: "center", transform: cat === c.id ? "scale(1.02)" : "none", transition: "transform .12s ease" }}>
+                    {c.icon && <span style={{ fontSize: 20, lineHeight: 1 }}>{c.icon}</span>}
+                    <span style={{ fontSize: 12, lineHeight: 1.25, wordBreak: "break-word", ...gujStyle(c.label, 12) }}>{c.label}</span>
                   </button>
                 ))}
               </div>
@@ -1226,8 +1228,13 @@ ${breakdownHtml}
                 <div style={{ fontSize: 11, fontWeight: 700, color: G.t3, textTransform: "uppercase", letterSpacing: 1.5 }}>Paid via</div>
                 <button onClick={openBankMod} title="Manage banks" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 13, color: G.tm, padding: "2px 4px", lineHeight: 1, fontWeight: 600 }}>✎ edit</button>
               </div>
-              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
-                {payModes.map(p => B(pay === p.id, p.label, () => { hap(); setPay(p.id); }))}
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {payModes.map(p => {
+                  const sel = pay === p.id;
+                  return (
+                    <button key={p.id} onClick={() => { hap(); setPay(p.id); }} style={{ padding: "10px 14px", borderRadius: 22, cursor: "pointer", fontSize: 14, fontWeight: sel ? 700 : 500, border: "none", background: sel ? G.bk : G.bg2, color: sel ? G.wh : G.t1 }}>{p.label}</button>
+                  );
+                })}
               </div>
             </div>
 
@@ -1246,10 +1253,10 @@ ${breakdownHtml}
                 };
                 const lbl = (() => { const d = new Date(active + "T12:00:00"); if (active === today) return "Today"; const y = new Date(); y.setDate(y.getDate() - 1); if (sameDay(d, y)) return "Yesterday"; return d.toLocaleDateString("en-IN", { day: "numeric", month: "short" }); })();
                 return (
-                  <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "4px 4px", marginBottom: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "6px 8px", marginBottom: 6 }}>
                     <button onClick={() => shiftDay(-1)} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>‹</button>
-                    <div style={{ flex: 1, textAlign: "center", fontSize: 14, fontWeight: 600, color: G.t1, position: "relative", cursor: "pointer" }}>
-                      {lbl}
+                    <div style={{ flex: 1, textAlign: "center", color: G.t1, position: "relative", cursor: "pointer" }}>
+                      <span style={{ display: "inline-block", fontSize: 14, fontWeight: lbl === "Today" ? 700 : 600, paddingBottom: 2, borderBottom: `1px dashed ${G.tm}` }}>📅 {lbl}</span>
                       <input type="date" value={active} max={today} onChange={e => { if (e.target.value && e.target.value <= today) setEditDate(e.target.value); }} style={{ position: "absolute", inset: 0, opacity: 0, cursor: "pointer", width: "100%", fontSize: 16 }} />
                     </div>
                     <button onClick={() => shiftDay(1)} disabled={active >= today} style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: active >= today ? "default" : "pointer", color: active >= today ? G.tm : G.t1, fontWeight: 600 }}>›</button>
