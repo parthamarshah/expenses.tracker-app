@@ -77,3 +77,9 @@ Postgres on Supabase. Tables (defined in the `*_migration.sql` files at repo roo
 - **`API_BASE` is hardcoded to `https://expenses.gurjarbooks.com`** in `src/App.jsx`. Used for: the SMS endpoint string shown to the user for Shortcut setup, and the `/api/delete-account` fetch. Don't make it dynamic — the Shortcut needs a stable URL even when developing on a different origin.
 - **`functions/api/log-sms.js`** is the largest Function (~580 lines). It identifies the bank, classifies debit-vs-other, parses amount, extracts the merchant note, and matches against the user's configured cards/accounts via `last4`. Most edits to SMS support land here.
 - **No tests.** When changing parser logic in `log-sms.js`, manually exercise via curl with representative SMS strings before merging.
+
+## Operational docs
+
+- **`INCIDENTS.md`** — append-only log of production incidents (symptom, root cause, fix, learnings).
+- **`KNOWN_RISKS.md`** — latent issues we've identified but haven't fixed. Triage with this list before adding "could we also…" items mid-PR.
+- **`/api/health`** — no-auth GET endpoint that reports missing runtime env vars. Run `npm run smoke` after a deploy to verify production.
