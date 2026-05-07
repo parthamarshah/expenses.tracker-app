@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+
+jobs:
+  # `build` is the gate that protects production: a syntax error or missing
+  # import here is exactly what would crash the Worker on deploy. Auto-merge
+  # waits on this check passing (once branch protection on `master` is set
+  # to require it).
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          # Throwaway placeholders so Vite can produce a bundle in CI.
+          # Real values live in Cloudflare's "Build → Variables and Secrets".
+          VITE_SUPABASE_URL: https://example.supabase.co
+          VITE_SUPABASE_ANON_KEY: ci-placeholder-anon-key
+
+  # `lint` is informational only. The repo currently has many pre-existing
+  # eslint errors (mostly in src/App.jsx). Until those are cleaned up, lint
+  # is not made a required check — but it's run on every PR so regressions
+  # in newly-added files are visible in the PR's Checks tab.
+  lint:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - run: npm ci
+      - run: npm run lint

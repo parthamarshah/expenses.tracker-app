@@ -8,7 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "preview": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "smoke": "curl -fsS https://expenses.gurjarbooks.com/api/health | grep -q '\"ok\":true'"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.97.0",

@@ -1,6 +1,7 @@
 import * as addExpense from "../functions/api/add-expense.js";
 import * as categories from "../functions/api/categories.js";
 import * as deleteAccount from "../functions/api/delete-account.js";
+import * as health from "../functions/api/health.js";
 import * as logSms from "../functions/api/log-sms.js";
 import * as manageCategories from "../functions/api/manage-categories.js";
 import * as stats from "../functions/api/stats.js";
@@ -11,6 +12,7 @@ const API_ROUTES = {
   "/api/add-expense": addExpense,
   "/api/categories": categories,
   "/api/delete-account": deleteAccount,
+  "/api/health": health,
   "/api/log-sms": logSms,
   "/api/manage-categories": manageCategories,
   "/api/stats": stats,
@@ -28,12 +30,31 @@ const METHOD_EXPORT = {
   OPTIONS: "onRequestOptions",
 };
 
+const jsonError = (status, error) =>
+  new Response(JSON.stringify({ ok: false, error }), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+    },
+  });
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const module = API_ROUTES[url.pathname];
     if (!module) {
       return env.ASSETS.fetch(request);
+    }
+
+    // Refuse to dispatch handlers when required Worker bindings are missing.
+    // Without this, supabase-js throws "supabaseUrl is required" inside every
+    // handler and the unhandled exception becomes Cloudflare's HTML 1101 page,
+    // which the iOS Shortcut can't parse. /api/health is exempt so operators
+    // can still ask the Worker which vars are missing.
+    if (url.pathname !== "/api/health" && (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY)) {
+      console.error("[worker] missing env: SUPABASE_URL or SUPABASE_SERVICE_KEY");
+      return jsonError(500, "Server misconfigured");
     }
 
     const exportName = METHOD_EXPORT[request.method];
@@ -49,11 +70,16 @@ export default {
       });
     }
 
-    return handler({
-      request,
-      env,
-      waitUntil: ctx.waitUntil.bind(ctx),
-      passThroughOnException: ctx.passThroughOnException.bind(ctx),
-    });
+    try {
+      return await handler({
+        request,
+        env,
+        waitUntil: ctx.waitUntil.bind(ctx),
+        passThroughOnException: ctx.passThroughOnException.bind(ctx),
+      });
+    } catch (err) {
+      console.error("[worker]", url.pathname, err?.stack || err);
+      return jsonError(500, "Internal error");
+    }
   },
 };
