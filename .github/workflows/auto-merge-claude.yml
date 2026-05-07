@@ -2,7 +2,7 @@ name: Auto-merge Claude PRs
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: write
@@ -13,14 +13,49 @@ jobs:
     if: startsWith(github.head_ref, 'claude/')
     runs-on: ubuntu-latest
     steps:
-      - name: Auto-merge
+      # Enable GitHub's built-in auto-merge instead of merging immediately.
+      # With branch protection on `master` requiring the `build` check to
+      # pass (see .github/workflows/ci.yml), GitHub holds the merge until
+      # the build is green. A failing build no longer auto-deploys to prod.
+      # If branch protection is not yet configured, the script falls back
+      # to a direct merge — same behavior as before this change.
+      - name: Enable auto-merge (squash)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            await github.rest.pulls.merge({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              merge_method: 'squash'
-            });
+            const pr = context.payload.pull_request;
+            if (pr.draft) {
+              core.info("PR is draft; skipping auto-merge.");
+              return;
+            }
+
+            const mutation = `
+              mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {
+                enablePullRequestAutoMerge(input: {
+                  pullRequestId: $pullRequestId,
+                  mergeMethod: $mergeMethod
+                }) {
+                  pullRequest { number autoMergeRequest { enabledAt } }
+                }
+              }
+            `;
+
+            try {
+              await github.graphql(mutation, {
+                pullRequestId: pr.node_id,
+                mergeMethod: "SQUASH",
+              });
+              core.info(`Auto-merge enabled on PR #${pr.number}.`);
+            } catch (err) {
+              // If branch protection isn't set up yet (or the PR is already
+              // mergeable with no required checks), fall back to a direct
+              // squash merge so the existing workflow still functions.
+              core.warning(`enablePullRequestAutoMerge failed: ${err.message}. Falling back to direct merge.`);
+              await github.rest.pulls.merge({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pr.number,
+                merge_method: "squash",
+              });
+            }

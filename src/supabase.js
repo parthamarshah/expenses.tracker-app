@@ -3,7 +3,30 @@ import { createClient } from "@supabase/supabase-js";
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(url, key, {
+// If the build-time Supabase vars are missing the SPA would otherwise fail
+// silently on every read/write. Surface a visible banner so a misconfigured
+// production deploy is obvious instead of looking like a generic sync bug.
+if (!url || !key) {
+  console.error("[supabase] missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY in build env");
+  if (typeof document !== "undefined") {
+    const showBanner = () => {
+      if (!document.body || document.getElementById("supabase-config-error")) return;
+      const el = document.createElement("div");
+      el.id = "supabase-config-error";
+      el.textContent = "Configuration error. Contact admin.";
+      el.style.cssText =
+        "background:#b00020;color:#fff;padding:12px;text-align:center;font:14px system-ui,sans-serif;position:sticky;top:0;z-index:9999";
+      document.body.insertBefore(el, document.body.firstChild);
+    };
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", showBanner, { once: true });
+    } else {
+      showBanner();
+    }
+  }
+}
+
+export const supabase = createClient(url || "https://invalid.local", key || "invalid", {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
   realtime: { params: { eventsPerSecond: 10 } },
 });
