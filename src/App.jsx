@@ -604,7 +604,7 @@ export default function ExpenseTracker() {
         amount: v, note: note.trim(), category: tid ? "trip" : cat,
         payMode: pay, date: newDate, tripId: tid,
       };
-      setExps(p => [newExp, ...p]);
+      setExps(p => [newExp, ...p].sort((a, b) => new Date(b.date) - new Date(a.date)));
       sToast(`${formatINR(v)} saved`);
       supabase.from("expenses").insert(expToDb(newExp, userId))
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
