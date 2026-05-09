@@ -396,7 +396,7 @@ export default function ExpenseTracker() {
         .on("postgres_changes",
           { event: "*", schema: "public", table: "expenses", filter: `user_id=eq.${userId}` },
           ({ eventType, new: n, old: o }) => {
-            if (eventType === "INSERT") { const e = dbToExp(n); setExps(p => p.some(x => x.id === e.id) ? p : [e, ...p]); }
+            if (eventType === "INSERT") { const e = dbToExp(n); setExps(p => p.some(x => x.id === e.id) ? p : [...p, e].sort((a, b) => new Date(b.date) - new Date(a.date))); }
             if (eventType === "UPDATE") setExps(p => p.map(x => x.id === n.id ? dbToExp(n) : x));
             if (eventType === "DELETE") setExps(p => p.filter(x => x.id !== o.id));
           }).subscribe();
@@ -604,7 +604,7 @@ export default function ExpenseTracker() {
         amount: v, note: note.trim(), category: tid ? "trip" : cat,
         payMode: pay, date: newDate, tripId: tid,
       };
-      setExps(p => [newExp, ...p].sort((a, b) => new Date(b.date) - new Date(a.date)));
+      setExps(p => [newExp, ...p.filter(x => x.id !== newExp.id)].sort((a, b) => new Date(b.date) - new Date(a.date)));
       sToast(`${formatINR(v)} saved`);
       supabase.from("expenses").insert(expToDb(newExp, userId))
         .then(({ error }) => { if (error) sToast("Sync error", "err"); });
@@ -1301,11 +1301,11 @@ ${breakdownHtml}
 
             {!selTrip && (
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-                <select value={fCat} onChange={e => setFCat(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
+                <select value={fCat} onChange={e => setFCat(e.target.value)} style={{ flex: 1, minWidth: 0, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Categories</option>
                   {activeFilterCats.map(c => <option key={c.id} value={c.id}>{c.icon ? `${c.icon} ${c.label}` : c.label}</option>)}
                 </select>
-                <select value={fPay} onChange={e => setFPay(e.target.value)} style={{ flex: 1, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
+                <select value={fPay} onChange={e => setFPay(e.target.value)} style={{ flex: 1, minWidth: 0, padding: "11px 10px", borderRadius: 10, border: `2px solid ${G.bdr}`, fontSize: 15, color: G.t2, background: G.bg, outline: "none" }}>
                   <option value="all">All Modes</option>
                   {payModes.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
                 </select>
