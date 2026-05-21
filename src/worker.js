@@ -8,6 +8,11 @@ import * as stats from "../functions/api/stats.js";
 import * as uncategorized from "../functions/api/uncategorized.js";
 import * as updateExpense from "../functions/api/update-expense.js";
 
+// Belt-and-suspenders fallback. SUPABASE_URL is also declared in wrangler.jsonc
+// vars so it survives every deploy, but this constant protects against any future
+// misconfiguration without requiring a secret rotation.
+const FALLBACK_SUPABASE_URL = "https://ecngekbnirgdynqdnxlx.supabase.co";
+
 const API_ROUTES = {
   "/api/add-expense": addExpense,
   "/api/categories": categories,
@@ -41,19 +46,20 @@ const jsonError = (status, error) =>
 
 export default {
   async fetch(request, env, ctx) {
+    // Ensure SUPABASE_URL is always populated — wrangler.jsonc vars is the
+    // primary source; this constant is a last-resort fallback.
+    env.SUPABASE_URL = env.SUPABASE_URL || FALLBACK_SUPABASE_URL;
+
     const url = new URL(request.url);
     const module = API_ROUTES[url.pathname];
     if (!module) {
       return env.ASSETS.fetch(request);
     }
 
-    // Refuse to dispatch handlers when required Worker bindings are missing.
-    // Without this, supabase-js throws "supabaseUrl is required" inside every
-    // handler and the unhandled exception becomes Cloudflare's HTML 1101 page,
-    // which the iOS Shortcut can't parse. /api/health is exempt so operators
-    // can still ask the Worker which vars are missing.
-    if (url.pathname !== "/api/health" && (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_KEY)) {
-      console.error("[worker] missing env: SUPABASE_URL or SUPABASE_SERVICE_KEY");
+    // SUPABASE_URL is now always present (wrangler vars + code fallback above).
+    // SUPABASE_SERVICE_KEY is the only remaining failure mode.
+    if (url.pathname !== "/api/health" && !env.SUPABASE_SERVICE_KEY) {
+      console.error("[worker] missing env: SUPABASE_SERVICE_KEY");
       return jsonError(500, "Server misconfigured");
     }
 

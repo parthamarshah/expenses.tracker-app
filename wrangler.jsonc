@@ -12,5 +12,11 @@
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    // Not a secret — same value is already shipped in the frontend JS bundle.
+    // Declaring it here means the Cloudflare Git integration can never silently
+    // clear it on deploy (previously it lived only in the dashboard).
+    "SUPABASE_URL": "https://ecngekbnirgdynqdnxlx.supabase.co"
   }
 }
