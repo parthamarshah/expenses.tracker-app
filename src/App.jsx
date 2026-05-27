@@ -68,10 +68,11 @@ const S = {
 
 const safeParse = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
 
-// Returns signed integer % change, or null if prev is 0/missing
+// Returns signed integer % change, or null if prev is 0/missing or change is extreme (>999%)
 const pctDelta = (curr, prev) => {
   if (!prev || prev === 0) return null;
-  return Math.round(((curr - prev) / prev) * 100);
+  const d = Math.round(((curr - prev) / prev) * 100);
+  return Math.abs(d) > 999 ? null : d;
 };
 
 // period: { scope: "month"|"year", year, month? }
@@ -1464,44 +1465,27 @@ ${breakdownHtml}
 
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
               {(() => {
-                const momD = insPeriod === "month" ? pctDelta(ins.totM, prevIns.totM) : null;
-                const yoyD = insPeriod === "month" ? pctDelta(ins.totM, yoyIns?.totM) : pctDelta(ins.totM, prevIns.totM);
-                const chip = (d, lbl) => {
-                  if (d === null) return null;
-                  const up = d > 0;
-                  return <span style={{ fontSize: 10, fontWeight: 700, color: up ? "#FF3B30" : "#34C759", marginRight: 5 }}>{up ? "▲" : "▼"} {Math.abs(d)}% {lbl}</span>;
-                };
+                // prevIns is prev month in month view, prev year in year view
+                const d = pctDelta(ins.totM, prevIns.totM);
                 return (
                   <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bk, color: G.wh }}>
                     <div style={{ fontSize: 10, fontWeight: 700, color: "#888", letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Expenses</div>
-                    <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
-                    {(momD !== null || yoyD !== null) && (
-                      <div style={{ marginTop: 4 }}>
-                        {chip(momD, "m/m")}
-                        {chip(yoyD, "y/y")}
-                      </div>
-                    )}
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
+                      {d !== null && <span style={{ fontSize: 11, fontWeight: 500, color: d > 0 ? "#FF6B6B" : "#66BB6A" }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}%</span>}
+                    </div>
                   </div>
                 );
               })()}
               {!cats.find(c => c.id === "investment")?.hidden && (() => {
-                const savD = pctDelta(ins.totI, prevIns.totI);
-                const yoySavD = insPeriod === "month" ? pctDelta(ins.totI, yoyIns?.totI) : null;
-                const chip = (d, lbl) => {
-                  if (d === null) return null;
-                  const up = d > 0;
-                  return <span style={{ fontSize: 10, fontWeight: 700, color: up ? "#34C759" : "#FF9500", marginRight: 5 }}>{up ? "▲" : "▼"} {Math.abs(d)}% {lbl}</span>;
-                };
+                const d = pctDelta(ins.totI, prevIns.totI);
                 return (
                   <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bg2, border: `1.5px solid ${G.bdr}` }}>
                     <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Savings</div>
-                    <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
-                    {(savD !== null || yoySavD !== null) && (
-                      <div style={{ marginTop: 4 }}>
-                        {chip(savD, insPeriod === "year" ? "y/y" : "m/m")}
-                        {chip(yoySavD, "y/y")}
-                      </div>
-                    )}
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                      <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
+                      {d !== null && <span style={{ fontSize: 11, fontWeight: 500, color: d > 0 ? "#66BB6A" : "#FF9500" }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}%</span>}
+                    </div>
                   </div>
                 );
               })()}
@@ -1654,22 +1638,21 @@ ${breakdownHtml}
               {(() => {
                 const all = Object.entries(ins.bc).sort((a, b) => b[1] - a[1]);
                 const visible = insCatExpanded ? all : all.slice(0, 3);
-                const deltaLabel = insPeriod === "year" ? "y/y" : "m/m";
                 return visible.map(([cid, a]) => {
                   const c = cid === "uncategorized" ? UNCAT : (allCats.find(x => x.id === cid) || cats[0]);
                   const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
                   const barCol = catColorMap[cid] || "#8E8E93";
-                  const prevAmt = prevIns.bc[cid] || 0;
-                  const d = pctDelta(a, prevAmt);
+                  const d = pctDelta(a, prevIns.bc[cid] || 0);
                   return (
                     <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
-                      <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: barCol, width: `${p}%`, transition: "width .4s" }} /></div>
-                      {d !== null && (
-                        <div style={{ fontSize: 12, marginTop: 3, textAlign: "right", color: d > 0 ? "#FF3B30" : "#34C759", fontWeight: 700 }}>
-                          {d > 0 ? "▲" : "▼"} {Math.abs(d)}% {deltaLabel}
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 15, color: G.t2, marginBottom: 5 }}>
+                        <span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
+                          {d !== null && <span style={{ fontSize: 11, fontWeight: 500, color: d > 0 ? "#FF3B30" : "#34C759" }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}%</span>}
+                          <span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span>
                         </div>
-                      )}
+                      </div>
+                      <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: barCol, width: `${p}%`, transition: "width .4s" }} /></div>
                     </div>
                   );
                 });
