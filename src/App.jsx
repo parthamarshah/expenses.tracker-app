@@ -1645,8 +1645,8 @@ ${breakdownHtml}
                   const d = pctDelta(a, prevIns.bc[cid] || 0);
                   return (
                     <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 15, color: G.t2, marginBottom: 5 }}>
-                        <span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 24, fontSize: 15, color: G.t2, marginBottom: 5 }}>
+                        <span style={{ ...gujStyle(c.label, 15), flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }}>{c.icon} {c.label}</span>
                         <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>
                           {d !== null && <span style={{ fontSize: 11, fontWeight: 500, color: d > 0 ? "#FF3B30" : "#34C759", marginRight: 4 }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}%</span>}
                           <span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span>
