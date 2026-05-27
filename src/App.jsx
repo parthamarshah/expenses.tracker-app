@@ -1645,9 +1645,9 @@ ${breakdownHtml}
                   const d = pctDelta(a, prevIns.bc[cid] || 0);
                   return (
                     <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 15, color: G.t2, marginBottom: 5 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 15, color: G.t2, marginBottom: 5 }}>
                         <span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span>
-                        <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 5, flexShrink: 0 }}>
                           {d !== null && <span style={{ fontSize: 11, fontWeight: 500, color: d > 0 ? "#FF3B30" : "#34C759" }}>{d > 0 ? "▲" : "▼"}{Math.abs(d)}%</span>}
                           <span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span>
                         </div>
@@ -1671,9 +1671,11 @@ ${breakdownHtml}
               {(() => { const PAY_COLORS = ["#3498DB", "#2ECC71", "#E74C3C", "#F39C12", "#9B59B6", "#1ABC9C"]; return Object.entries(ins.bp).sort((a, b) => b[1] - a[1]).map(([pid, a], i) => {
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
                 return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span>{getPayLabel(pid)}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 15, color: G.t2, marginBottom: 5 }}>
+                    <span>{getPayLabel(pid)}</span>
+                    <span style={{ flexShrink: 0 }}><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span><span style={{ fontSize: 12, color: G.tm, fontWeight: 400, marginLeft: 4 }}>({Math.round(p)}%)</span></span>
+                  </div>
                   <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: PAY_COLORS[i % PAY_COLORS.length], width: `${p}%`, transition: "width .4s" }} /></div>
-                  <div style={{ fontSize: 12, color: G.tm, marginTop: 3, textAlign: "right" }}>{Math.round(p)}%</div>
                 </div>);
               }); })()}
             </div>
