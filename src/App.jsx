@@ -68,6 +68,12 @@ const S = {
 
 const safeParse = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
 
+// Returns signed integer % change, or null if prev is 0/missing
+const pctDelta = (curr, prev) => {
+  if (!prev || prev === 0) return null;
+  return Math.round(((curr - prev) / prev) * 100);
+};
+
 // period: { scope: "month"|"year", year, month? }
 const inPeriodFor = (e, period) => {
   const d = new Date(e.date);
@@ -1041,6 +1047,47 @@ ${breakdownHtml}
     return { bc, bp, totM, totI, mc: tm.length, hasTripInPeriod };
   }, [exps, insAsPeriod, insExTrips]);
 
+  // Previous period for delta computation (prev month in month view, prev year in year view)
+  const prevAsPeriod = useMemo(() => {
+    if (insPeriod === "year") return { scope: "year", year: insYear - 1 };
+    let m = insMonth.month - 1, y = insMonth.year;
+    if (m < 0) { m = 11; y--; }
+    return { scope: "month", year: y, month: m };
+  }, [insPeriod, insYear, insMonth]);
+
+  // Same month last year — for y/y chip in month view
+  const yoyAsPeriod = useMemo(() => {
+    if (insPeriod !== "month") return null;
+    return { scope: "month", year: insMonth.year - 1, month: insMonth.month };
+  }, [insPeriod, insMonth]);
+
+  const prevIns = useMemo(() => {
+    const tm = exps.filter(e => {
+      if (e.category === "investment") return false;
+      if (insExTrips && e.tripId) return false;
+      return inPeriodFor(e, prevAsPeriod);
+    });
+    const bc = {};
+    tm.forEach(e => { const k = e.tripId ? `trip_${e.tripId}` : e.category; bc[k] = (bc[k] || 0) + e.amount; });
+    const totM = tm.reduce((s, e) => s + e.amount, 0);
+    const totI = exps.filter(e => e.category === "investment" && !e.tripId && inPeriodFor(e, prevAsPeriod)).reduce((s, e) => s + e.amount, 0);
+    return { bc, totM, totI };
+  }, [exps, prevAsPeriod, insExTrips]);
+
+  const yoyIns = useMemo(() => {
+    if (!yoyAsPeriod) return null;
+    const tm = exps.filter(e => {
+      if (e.category === "investment") return false;
+      if (insExTrips && e.tripId) return false;
+      return inPeriodFor(e, yoyAsPeriod);
+    });
+    const bc = {};
+    tm.forEach(e => { const k = e.tripId ? `trip_${e.tripId}` : e.category; bc[k] = (bc[k] || 0) + e.amount; });
+    const totM = tm.reduce((s, e) => s + e.amount, 0);
+    const totI = exps.filter(e => e.category === "investment" && !e.tripId && inPeriodFor(e, yoyAsPeriod)).reduce((s, e) => s + e.amount, 0);
+    return { bc, totM, totI };
+  }, [exps, yoyAsPeriod, insExTrips]);
+
   // 6-month history scans are independent of the selected period — memoize separately
   // so switching period tabs doesn't trigger a full rescan.
   const mindfulHistory = useMemo(() => {
@@ -1057,18 +1104,31 @@ ${breakdownHtml}
     return buildMindfulReport(exps, insAsPeriod, trips, mindfulPrefs, mindfulHistory);
   }, [mindfulHistory, exps, trips, mindfulPrefs, insAsPeriod]);
 
-  // Yearly bar chart data: monthly breakdown for the selected year
+  // Yearly bar chart data: monthly + per-category breakdown for the selected year
   const yearlyBars = useMemo(() => {
     if (insPeriod !== "year") return [];
-    const months = Array.from({ length: 12 }, (_, i) => ({ month: i, total: 0 }));
+    const months = Array.from({ length: 12 }, (_, i) => ({ month: i, total: 0, cats: {} }));
     exps.forEach(e => {
       if (e.category === "investment") return;
       if (insExTrips && e.tripId) return;
       const d = new Date(e.date);
-      if (d.getFullYear() === insYear) months[d.getMonth()].total += e.amount;
+      if (d.getFullYear() === insYear) {
+        const mi = d.getMonth();
+        months[mi].total += e.amount;
+        const cid = e.tripId ? `trip_${e.tripId}` : e.category;
+        months[mi].cats[cid] = (months[mi].cats[cid] || 0) + e.amount;
+      }
     });
     return months;
   }, [exps, insYear, insPeriod, insExTrips]);
+
+  // Stable category order for stacked bars: sorted by annual total descending
+  const yearCatOrder = useMemo(() => {
+    if (insPeriod !== "year" || yearlyBars.length === 0) return [];
+    const totals = {};
+    yearlyBars.forEach(b => { Object.entries(b.cats).forEach(([cid, amt]) => { totals[cid] = (totals[cid] || 0) + amt; }); });
+    return Object.entries(totals).sort((a, b) => b[1] - a[1]).map(([cid]) => cid);
+  }, [yearlyBars, insPeriod]);
 
   const shiftPeriod = useCallback((dir) => {
     if (insPeriod === "month") {
@@ -1403,22 +1463,48 @@ ${breakdownHtml}
             </div>
 
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-              <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bk, color: G.wh }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: "#888", letterSpacing: 1, textTransform: "uppercase" }}>Expenses</div>
-                  <div style={{ fontSize: 10, color: "#666" }}>{ins.mc} entries</div>
-                </div>
-                <div style={{ fontSize: 21, fontWeight: 800, marginTop: 2, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
-              </div>
-              {!cats.find(c => c.id === "investment")?.hidden && (
-              <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bg2, border: `1.5px solid ${G.bdr}` }}>
-                <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 6 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase" }}>Savings</div>
-                  <div style={{ fontSize: 10, color: G.tm }}>{insPeriod === "year" ? insYear : new Date(insMonth.year, insMonth.month).toLocaleDateString("en-IN", { month: "short" })}</div>
-                </div>
-                <div style={{ fontSize: 21, fontWeight: 800, marginTop: 2, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
-              </div>
-              )}
+              {(() => {
+                const momD = insPeriod === "month" ? pctDelta(ins.totM, prevIns.totM) : null;
+                const yoyD = insPeriod === "month" ? pctDelta(ins.totM, yoyIns?.totM) : pctDelta(ins.totM, prevIns.totM);
+                const chip = (d, lbl) => {
+                  if (d === null) return null;
+                  const up = d > 0;
+                  return <span style={{ fontSize: 10, fontWeight: 700, color: up ? "#FF3B30" : "#34C759", marginRight: 5 }}>{up ? "▲" : "▼"} {Math.abs(d)}% {lbl}</span>;
+                };
+                return (
+                  <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bk, color: G.wh }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: "#888", letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Expenses</div>
+                    <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: -.5 }}>{formatINR(ins.totM)}</div>
+                    {(momD !== null || yoyD !== null) && (
+                      <div style={{ marginTop: 4 }}>
+                        {chip(momD, "m/m")}
+                        {chip(yoyD, "y/y")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+              {!cats.find(c => c.id === "investment")?.hidden && (() => {
+                const savD = pctDelta(ins.totI, prevIns.totI);
+                const yoySavD = insPeriod === "month" ? pctDelta(ins.totI, yoyIns?.totI) : null;
+                const chip = (d, lbl) => {
+                  if (d === null) return null;
+                  const up = d > 0;
+                  return <span style={{ fontSize: 10, fontWeight: 700, color: up ? "#34C759" : "#FF9500", marginRight: 5 }}>{up ? "▲" : "▼"} {Math.abs(d)}% {lbl}</span>;
+                };
+                return (
+                  <div style={{ flex: 1, borderRadius: 14, padding: "10px 13px", background: G.bg2, border: `1.5px solid ${G.bdr}` }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: G.t3, letterSpacing: 1, textTransform: "uppercase", marginBottom: 2 }}>Savings</div>
+                    <div style={{ fontSize: 21, fontWeight: 800, letterSpacing: -.5 }}>{formatINR(ins.totI)}</div>
+                    {(savD !== null || yoySavD !== null) && (
+                      <div style={{ marginTop: 4 }}>
+                        {chip(savD, insPeriod === "year" ? "y/y" : "m/m")}
+                        {chip(yoySavD, "y/y")}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Exclude trips toggle */}
@@ -1568,15 +1654,22 @@ ${breakdownHtml}
               {(() => {
                 const all = Object.entries(ins.bc).sort((a, b) => b[1] - a[1]);
                 const visible = insCatExpanded ? all : all.slice(0, 3);
+                const deltaLabel = insPeriod === "year" ? "y/y" : "m/m";
                 return visible.map(([cid, a]) => {
                   const c = cid === "uncategorized" ? UNCAT : (allCats.find(x => x.id === cid) || cats[0]);
                   const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
                   const barCol = catColorMap[cid] || "#8E8E93";
+                  const prevAmt = prevIns.bc[cid] || 0;
+                  const d = pctDelta(a, prevAmt);
                   return (
                     <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15, color: G.t2, marginBottom: 5 }}><span style={gujStyle(c.label, 15)}>{c.icon} {c.label}</span><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span></div>
                       <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: barCol, width: `${p}%`, transition: "width .4s" }} /></div>
-                      <div style={{ fontSize: 12, color: G.tm, marginTop: 3, textAlign: "right" }}>{Math.round(p)}%</div>
+                      {d !== null && (
+                        <div style={{ fontSize: 12, marginTop: 3, textAlign: "right", color: d > 0 ? "#FF3B30" : "#34C759", fontWeight: 700 }}>
+                          {d > 0 ? "▲" : "▼"} {Math.abs(d)}% {deltaLabel}
+                        </div>
+                      )}
                     </div>
                   );
                 });
@@ -1602,28 +1695,56 @@ ${breakdownHtml}
               }); })()}
             </div>
 
-            {/* Yearly bar chart — monthly breakdown (at end, trailing NIL months trimmed) */}
+            {/* Yearly bar chart — stacked category breakdown, trailing nil months trimmed */}
             {insPeriod === "year" && yearlyBars.length > 0 && (() => {
               const lastIdx = yearlyBars.reduce((last, b, i) => b.total > 0 ? i : last, -1);
               const displayBars = lastIdx >= 0 ? yearlyBars.slice(0, lastIdx + 1) : [];
               if (displayBars.length === 0) return null;
               const maxVal = Math.max(...displayBars.map(b => b.total), 1);
               const mNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+              // Only show legend for categories that actually appear
+              const legendCats = yearCatOrder.filter(cid => {
+                const catObj = cid === "uncategorized" ? UNCAT : allCats.find(x => x.id === cid);
+                return !!catObj;
+              });
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
                   <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>Monthly Breakdown</div>
                   {displayBars.map((b, i) => (
                     <div key={i} onClick={() => { setInsPeriod("month"); setInsMonth({ year: insYear, month: i }); }} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, cursor: "pointer" }}>
                       <span style={{ width: 28, fontSize: 11, fontWeight: 600, color: G.t3, flexShrink: 0 }}>{mNames[i]}</span>
-                      <div style={{ flex: 1, height: 18, background: G.bg3, borderRadius: 6, overflow: "hidden" }}>
-                        <div style={{ height: 18, borderRadius: 6, background: b.total > 0 ? G.dk : "transparent", width: `${(b.total / maxVal) * 100}%`, transition: "width .4s" }} />
+                      <div style={{ flex: 1, height: 20, background: G.bg3, borderRadius: 6, overflow: "hidden", display: "flex" }}>
+                        {b.total > 0 && yearCatOrder.map(cid => {
+                          const segAmt = b.cats[cid] || 0;
+                          if (segAmt === 0) return null;
+                          const segPct = (segAmt / maxVal) * 100;
+                          return (
+                            <div key={cid}
+                              onClick={(e) => { e.stopPropagation(); hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod("month"); setHistMonth({ year: insYear, month: i }); setHistYear(insYear); try { localStorage.setItem("histPeriod", "month"); localStorage.setItem("histMonth", JSON.stringify({ year: insYear, month: i })); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }}
+                              style={{ height: 20, background: catColorMap[cid] || "#8E8E93", width: `${segPct}%`, cursor: "pointer", flexShrink: 0 }}
+                              title={`${(allCats.find(x => x.id === cid) || UNCAT).label}: ${formatINR(segAmt)}`}
+                            />
+                          );
+                        })}
                       </div>
                       <span style={{ fontSize: 12, fontWeight: 600, color: b.total > 0 ? G.t1 : G.tm, minWidth: 55, textAlign: "right" }}>{b.total > 0 ? formatINR(b.total) : "—"}</span>
                     </div>
                   ))}
-                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, padding: "8px 0 0", borderTop: `1px solid ${G.lt}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, padding: "8px 0 6px", borderTop: `1px solid ${G.lt}` }}>
                     <span style={{ fontSize: 13, color: G.t3 }}>Avg/month</span>
                     <span style={{ fontSize: 13, fontWeight: 700 }}>{formatINR(Math.round(ins.totM / (displayBars.filter(b => b.total > 0).length || 1)))}</span>
+                  </div>
+                  {/* Legend */}
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 12px", paddingTop: 8, borderTop: `1px solid ${G.lt}` }}>
+                    {legendCats.map(cid => {
+                      const catObj = cid === "uncategorized" ? UNCAT : (allCats.find(x => x.id === cid) || { label: cid, icon: "" });
+                      return (
+                        <div key={cid} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: 2, background: catColorMap[cid] || "#8E8E93", flexShrink: 0 }} />
+                          <span style={{ fontSize: 11, color: G.t2 }}>{catObj.icon} {catObj.label}</span>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
