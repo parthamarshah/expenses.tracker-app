@@ -5,6 +5,7 @@ import * as health from "../functions/api/health.js";
 import * as logSms from "../functions/api/log-sms.js";
 import * as manageCategories from "../functions/api/manage-categories.js";
 import * as stats from "../functions/api/stats.js";
+import * as statsHistory from "../functions/api/stats-history.js";
 import * as uncategorized from "../functions/api/uncategorized.js";
 import * as updateExpense from "../functions/api/update-expense.js";
 
@@ -21,6 +22,7 @@ const API_ROUTES = {
   "/api/log-sms": logSms,
   "/api/manage-categories": manageCategories,
   "/api/stats": stats,
+  "/api/stats-history": statsHistory,
   "/api/uncategorized": uncategorized,
   "/api/update-expense": updateExpense,
 };

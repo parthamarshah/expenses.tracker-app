@@ -75,16 +75,38 @@ const pctDelta = (curr, prev) => {
   return Math.abs(d) > 999 ? null : d;
 };
 
-// period: { scope: "month"|"year", year, month? }
+// weekStart dates are stored as "YYYY-MM-DD" in LOCAL time (not UTC) so comparisons work in any timezone.
+const toLocalISO = (d) => { const z = n => n.toString().padStart(2, "0"); return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`; };
+const localMonday = (d) => { const day = d.getDay(), diff = day === 0 ? -6 : 1 - day; return new Date(d.getFullYear(), d.getMonth(), d.getDate() + diff); };
+
+// period: { scope: "month"|"year"|"week", year?, month?, weekStart? }
 const inPeriodFor = (e, period) => {
   const d = new Date(e.date);
   if (period.scope === "year") return d.getFullYear() === period.year;
+  if (period.scope === "week") {
+    // Parse as local date (YYYY-MM-DD) to avoid UTC midnight shifting in non-UTC timezones
+    const [wy, wm, wd] = period.weekStart.split("-").map(Number);
+    const start = new Date(wy, wm - 1, wd);
+    const end = new Date(wy, wm - 1, wd + 7);
+    return d >= start && d < end;
+  }
   return d.getMonth() === period.month && d.getFullYear() === period.year;
 };
 
-const periodLabel = (period) => period.scope === "year"
-  ? String(period.year)
-  : new Date(period.year, period.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+const periodLabel = (period) => {
+  if (period.scope === "year") return String(period.year);
+  if (period.scope === "week") {
+    const [wy, wm, wd] = period.weekStart.split("-").map(Number);
+    const start = new Date(wy, wm - 1, wd);
+    const end = new Date(wy, wm - 1, wd + 6);
+    const startStr = start.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+    const endStr = start.getMonth() === end.getMonth()
+      ? end.toLocaleDateString("en-IN", { day: "numeric" })
+      : end.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+    return `${startStr}–${endStr}`;
+  }
+  return new Date(period.year, period.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+};
 
 // ── Mindful Insights helpers (pure, client-side only) ─────────────────────────
 const expSig = (e) => {
@@ -257,15 +279,17 @@ export default function ExpenseTracker() {
   const [detMod,    setDetMod]    = useState(null);
   const [tripDet,   setTripDet]   = useState(null);
   const [confDel,   setConfDel]   = useState(null); // trip deletion confirm
-  // Insights period: "month" | "year"
+  // Insights period: "month" | "week" | "year"
   const [insExTrips,  setInsExTrips]  = useState(false); // exclude trips from insights
-  const [insPeriod,   setInsPeriod]   = useState("month");
+  const [insPeriod,   setInsPeriod]   = useState("week");
   const [insMonth,    setInsMonth]    = useState(() => { const n = new Date(); return { year: n.getFullYear(), month: n.getMonth() }; });
   const [insYear,     setInsYear]     = useState(() => new Date().getFullYear());
-  // History period: "month" | "year" — persisted to localStorage (legacy "all" coerced to "month")
-  const [histPeriod,  setHistPeriod]  = useState(() => { try { const s = localStorage.getItem("histPeriod"); return s === "year" ? "year" : "month"; } catch { return "month"; } });
+  const [insWeek,     setInsWeek]     = useState(() => { const n = new Date(); return { weekStart: toLocalISO(localMonday(n)) }; });
+  // History period: "month" | "week" | "year" — persisted to localStorage (legacy "all" coerced to "month")
+  const [histPeriod,  setHistPeriod]  = useState(() => { try { const s = localStorage.getItem("histPeriod"); return s === "year" ? "year" : s === "week" ? "week" : "month"; } catch { return "month"; } });
   const [histMonth,   setHistMonth]   = useState(() => { const n = new Date(); try { const s = localStorage.getItem("histMonth"); if (s) return JSON.parse(s); } catch {} return { year: n.getFullYear(), month: n.getMonth() }; });
   const [histYear,    setHistYear]    = useState(() => { try { const s = localStorage.getItem("histYear"); if (s) return Number(s); } catch {} return new Date().getFullYear(); });
+  const [histWeek,    setHistWeek]    = useState(() => { try { const s = localStorage.getItem("histWeek"); if (s) return JSON.parse(s); } catch {} return { weekStart: toLocalISO(localMonday(new Date())) }; });
   const [editDate,  setEditDate]  = useState("");
   const [keyMod,     setKeyMod]     = useState(false);
   const [userKey,    setUserKey]    = useState(null);
@@ -512,15 +536,14 @@ export default function ExpenseTracker() {
 
   // Dynamic history filter: only categories that have expenses in the selected period
   const activeFilterCats = useMemo(() => {
-    let periodExps = [...exps];
-    if (histPeriod === "month") periodExps = periodExps.filter(e => { const d = new Date(e.date); return d.getMonth() === histMonth.month && d.getFullYear() === histMonth.year; });
-    else if (histPeriod === "year") periodExps = periodExps.filter(e => new Date(e.date).getFullYear() === histYear);
+    const histAsPeriod = histPeriod === "year" ? { scope: "year", year: histYear } : histPeriod === "week" ? { scope: "week", weekStart: histWeek.weekStart } : { scope: "month", year: histMonth.year, month: histMonth.month };
+    let periodExps = selTrip ? [...exps] : exps.filter(e => inPeriodFor(e, histAsPeriod));
     if (selTrip) periodExps = periodExps.filter(e => e.tripId === selTrip);
     const activeCatIds = new Set(periodExps.map(e => e.tripId ? `trip_${e.tripId}` : e.category));
     const result = visCats.filter(c => activeCatIds.has(c.id));
     if (activeCatIds.has("uncategorized")) result.push(UNCAT);
     return result;
-  }, [exps, visCats, trips, histPeriod, histMonth, histYear, selTrip]);
+  }, [exps, visCats, trips, histPeriod, histMonth, histYear, histWeek, selTrip]);
 
   // Dynamic payment modes: Cash + user's configured banks/cards
   const payModes = useMemo(() => {
@@ -704,8 +727,8 @@ export default function ExpenseTracker() {
     if (selTrip) {
       l = l.filter(e => e.tripId === selTrip);
     } else {
-      if (histPeriod === "month") l = l.filter(e => { const d = new Date(e.date); return d.getMonth() === histMonth.month && d.getFullYear() === histMonth.year; });
-      else if (histPeriod === "year") l = l.filter(e => new Date(e.date).getFullYear() === histYear);
+      const histAsPeriod = histPeriod === "year" ? { scope: "year", year: histYear } : histPeriod === "week" ? { scope: "week", weekStart: histWeek.weekStart } : { scope: "month", year: histMonth.year, month: histMonth.month };
+      l = l.filter(e => inPeriodFor(e, histAsPeriod));
       if (fCat !== "all") {
         if (fCat.startsWith("trip_")) l = l.filter(e => e.tripId === fCat.replace("trip_", ""));
         else l = l.filter(e => e.category === fCat && !e.tripId);
@@ -721,7 +744,7 @@ export default function ExpenseTracker() {
       });
     }
     return l; // exps is always newest-first; filtering preserves that order
-  }, [exps, fCat, fPay, sq, selTrip, allCats, histPeriod, histMonth, histYear]);
+  }, [exps, fCat, fPay, sq, selTrip, allCats, histPeriod, histMonth, histYear, histWeek]);
 
   // ── Export ────────────────────────────────────────────────────────────────
   const esc = useCallback((v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"), []);
@@ -1017,17 +1040,19 @@ ${breakdownHtml}
   }, [editBanks, userId, sToast]);
 
   // ── Insights ──────────────────────────────────────────────────────────────
-  const insAsPeriod = useMemo(() => insPeriod === "year"
-    ? { scope: "year", year: insYear }
-    : { scope: "month", year: insMonth.year, month: insMonth.month },
-  [insPeriod, insMonth, insYear]);
+  const insAsPeriod = useMemo(() => {
+    if (insPeriod === "year") return { scope: "year", year: insYear };
+    if (insPeriod === "week") return { scope: "week", weekStart: insWeek.weekStart };
+    return { scope: "month", year: insMonth.year, month: insMonth.month };
+  }, [insPeriod, insMonth, insYear, insWeek]);
 
   const insPeriodLabel = useMemo(() => periodLabel(insAsPeriod), [insAsPeriod]);
 
-  const mindfulScopeKey = useMemo(() => insAsPeriod.scope === "year"
-    ? `year-${insAsPeriod.year}`
-    : `month-${insAsPeriod.year}-${insAsPeriod.month}`,
-  [insAsPeriod]);
+  const mindfulScopeKey = useMemo(() => {
+    if (insAsPeriod.scope === "year") return `year-${insAsPeriod.year}`;
+    if (insAsPeriod.scope === "week") return `week-${insAsPeriod.weekStart}`;
+    return `month-${insAsPeriod.year}-${insAsPeriod.month}`;
+  }, [insAsPeriod]);
 
   const isMindfulReviewed = (mindfulPrefs.reviewedScopes || []).includes(mindfulScopeKey);
   const mindfulExpanded = mindfulOverrides[mindfulScopeKey] ?? !isMindfulReviewed;
@@ -1048,13 +1073,17 @@ ${breakdownHtml}
     return { bc, bp, totM, totI, mc: tm.length, hasTripInPeriod };
   }, [exps, insAsPeriod, insExTrips]);
 
-  // Previous period for delta computation (prev month in month view, prev year in year view)
+  // Previous period for delta computation
   const prevAsPeriod = useMemo(() => {
     if (insPeriod === "year") return { scope: "year", year: insYear - 1 };
+    if (insPeriod === "week") {
+      const [wy, wm, wd] = insWeek.weekStart.split("-").map(Number);
+      return { scope: "week", weekStart: toLocalISO(new Date(wy, wm - 1, wd - 7)) };
+    }
     let m = insMonth.month - 1, y = insMonth.year;
     if (m < 0) { m = 11; y--; }
     return { scope: "month", year: y, month: m };
-  }, [insPeriod, insYear, insMonth]);
+  }, [insPeriod, insYear, insMonth, insWeek]);
 
   // Same month last year — for y/y chip in month view
   const yoyAsPeriod = useMemo(() => {
@@ -1141,18 +1170,24 @@ ${breakdownHtml}
       });
     } else if (insPeriod === "year") {
       setInsYear(prev => prev + dir);
+    } else if (insPeriod === "week") {
+      setInsWeek(prev => {
+        const [wy, wm, wd] = prev.weekStart.split("-").map(Number);
+        return { weekStart: toLocalISO(new Date(wy, wm - 1, wd + dir * 7)) };
+      });
     }
   }, [insPeriod]);
 
   const cyclePeriod = useCallback(() => {
-    setInsPeriod(p => p === "month" ? "year" : "month");
+    setInsPeriod(p => p === "month" ? "week" : p === "week" ? "year" : "month");
   }, []);
 
   // History period helpers
   const histPeriodLabel = useMemo(() => {
     if (histPeriod === "year") return histYear.toString();
+    if (histPeriod === "week") return periodLabel({ scope: "week", weekStart: histWeek.weekStart });
     return new Date(histMonth.year, histMonth.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
-  }, [histMonth, histYear, histPeriod]);
+  }, [histMonth, histYear, histWeek, histPeriod]);
 
   const shiftHistPeriod = useCallback((dir) => {
     if (histPeriod === "month") {
@@ -1169,16 +1204,105 @@ ${breakdownHtml}
         try { localStorage.setItem("histYear", String(next)); } catch {}
         return next;
       });
+    } else if (histPeriod === "week") {
+      setHistWeek(prev => {
+        const [wy, wm, wd] = prev.weekStart.split("-").map(Number);
+        const next = { weekStart: toLocalISO(new Date(wy, wm - 1, wd + dir * 7)) };
+        try { localStorage.setItem("histWeek", JSON.stringify(next)); } catch {}
+        return next;
+      });
     }
   }, [histPeriod]);
 
   const cycleHistPeriod = useCallback(() => {
     setHistPeriod(p => {
-      const next = p === "month" ? "year" : "month";
+      const next = p === "month" ? "week" : p === "week" ? "year" : "month";
       try { localStorage.setItem("histPeriod", next); } catch {}
       return next;
     });
   }, []);
+
+  // ── Velocity chip: projected end-of-period spend vs previous period ───────
+  const velocityChip = useMemo(() => {
+    const now = new Date();
+    let daysElapsed, daysTotal;
+    if (insPeriod === "week") {
+      const [wy, wm, wd] = insWeek.weekStart.split("-").map(Number);
+      const start = new Date(wy, wm - 1, wd);
+      const end = new Date(wy, wm - 1, wd + 7);
+      if (now < start || now >= end) return null;
+      daysElapsed = Math.floor((now - start) / 86400000) + 1;
+      daysTotal = 7;
+    } else if (insPeriod === "month") {
+      if (insMonth.month !== now.getMonth() || insMonth.year !== now.getFullYear()) return null;
+      daysElapsed = now.getDate();
+      daysTotal = new Date(insMonth.year, insMonth.month + 1, 0).getDate();
+    } else {
+      return null;
+    }
+    if (!daysElapsed || ins.totM === 0) return null;
+    const projected = Math.round((ins.totM / daysElapsed) * daysTotal);
+    const pct = pctDelta(projected, prevIns.totM);
+    return { projected, pct, daysElapsed, daysTotal };
+  }, [insPeriod, insWeek, insMonth, ins.totM, prevIns.totM]);
+
+  // ── Day-of-week bars ───────────────────────────────────────────────────────
+  const dowBars = useMemo(() => {
+    const days = Array.from({ length: 7 }, () => ({ total: 0, count: 0 }));
+    const periodExps = exps.filter(e => {
+      if (e.category === "investment") return false;
+      if (insExTrips && e.tripId) return false;
+      return inPeriodFor(e, insAsPeriod);
+    });
+    periodExps.forEach(e => {
+      const dow = (new Date(e.date).getDay() + 6) % 7; // Mon=0 … Sun=6
+      days[dow].total += e.amount;
+      days[dow].count++;
+    });
+    const isWeek = insPeriod === "week";
+    return days.map((d, i) => ({
+      label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
+      value: isWeek ? d.total : (d.count > 0 ? d.total / d.count : 0),
+      count: d.count,
+    }));
+  }, [exps, insAsPeriod, insExTrips, insPeriod]);
+
+  // ── Recurring expense detection ────────────────────────────────────────────
+  const recurringItems = useMemo(() => {
+    const cutoff = new Date();
+    cutoff.setMonth(cutoff.getMonth() - 4);
+    const history = exps.filter(e => new Date(e.date) >= cutoff && e.category !== "investment");
+    const dismissed = new Set(mindfulPrefs.dismissedRecurring || []);
+    const groups = new Map();
+    history.forEach(e => {
+      const bucket = Math.round(e.amount / 50) * 50;
+      const key = `${e.category}:${bucket}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(e);
+    });
+    const found = [];
+    for (const [key, entries] of groups) {
+      if (dismissed.has(key)) continue;
+      if (entries.length < 3) continue;
+      const dates = entries.map(e => new Date(e.date)).sort((a, b) => a - b);
+      const intervals = dates.slice(1).map((d, i) => (d - dates[i]) / 86400000);
+      const avg = intervals.reduce((s, v) => s + v, 0) / intervals.length;
+      const std = Math.sqrt(intervals.reduce((s, v) => s + (v - avg) ** 2, 0) / intervals.length);
+      if (avg === 0 || std / avg > 0.4) continue;
+      const freq = avg <= 2 ? "daily" : avg <= 10 ? "weekly" : avg <= 35 ? "monthly" : null;
+      if (!freq) continue;
+      const [catId] = key.split(":");
+      const avgAmt = entries.reduce((s, e) => s + e.amount, 0) / entries.length;
+      found.push({ key, catId, avgAmt, freq, count: entries.length });
+    }
+    return found.sort((a, b) => b.avgAmt - a.avgAmt);
+  }, [exps, mindfulPrefs.dismissedRecurring]);
+
+  const dismissRecurring = useCallback((key) => {
+    const current = mindfulPrefsRef.current.dismissedRecurring || [];
+    if (current.includes(key)) return;
+    saveMindfulPrefs({ dismissedRecurring: [...current, key] });
+  }, [saveMindfulPrefs]);
 
   // ── Trip insights ─────────────────────────────────────────────────────────
   const getTI = useCallback((tid) => {
@@ -1491,6 +1615,19 @@ ${breakdownHtml}
               })()}
             </div>
 
+            {/* Velocity chip */}
+            {velocityChip && (
+              <div style={{ marginBottom: 12, padding: "7px 12px", background: G.bg2, borderRadius: 10, border: `1px solid ${G.bdr}`, fontSize: 13, color: G.t2 }}>
+                <span style={{ color: G.t3 }}>Day {velocityChip.daysElapsed}/{velocityChip.daysTotal} · on pace for </span>
+                <span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(velocityChip.projected)}</span>
+                {velocityChip.pct !== null && (
+                  <span style={{ marginLeft: 6, fontWeight: 500, fontSize: 12, color: velocityChip.pct > 0 ? "#FF6B6B" : "#34C759" }}>
+                    {velocityChip.pct > 0 ? "▲" : "▼"}{Math.abs(velocityChip.pct)}% vs last
+                  </span>
+                )}
+              </div>
+            )}
+
             {/* Exclude trips toggle */}
             {ins.hasTripInPeriod && (
               <div onClick={() => setInsExTrips(p => !p)} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, cursor: "pointer", padding: "8px 12px", background: insExTrips ? "#F0F7FF" : G.bg2, borderRadius: 10, border: `1.5px solid ${insExTrips ? "#4A90D9" : G.bdr}` }}>
@@ -1573,6 +1710,31 @@ ${breakdownHtml}
                   </>
                 )}
 
+                {/* Fixed Costs (recurring detection) */}
+                {recurringItems.length > 0 && (() => {
+                  const totalRecurring = recurringItems.reduce((s, r) => s + r.avgAmt, 0);
+                  return (
+                    <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${G.bg3}` }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <div style={{ fontSize: 10, color: G.t3, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.6 }}>Fixed Costs</div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: G.t1 }}>{formatINR(Math.round(totalRecurring))}<span style={{ fontSize: 10, color: G.tm, fontWeight: 400, marginLeft: 3 }}>/period</span></div>
+                      </div>
+                      {recurringItems.map(r => {
+                        const cat = allCats.find(c => c.id === r.catId) || { icon: "📦", label: r.catId };
+                        const freqColors = { daily: "#3498DB", weekly: "#9B59B6", monthly: "#E67E22" };
+                        return (
+                          <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, fontSize: 13 }}>
+                            <span style={{ ...gujStyle(cat.label, 13), flex: 1, color: G.t2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cat.icon} {cat.label}</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: freqColors[r.freq] || G.t3, background: `${freqColors[r.freq]}18`, padding: "1px 6px", borderRadius: 4 }}>{r.freq}</span>
+                            <span style={{ fontWeight: 700, color: G.t1, minWidth: 52, textAlign: "right" }}>{formatINR(Math.round(r.avgAmt))}</span>
+                            <button onClick={() => { hap(); dismissRecurring(r.key); }} title="Dismiss" style={{ width: 20, height: 20, borderRadius: "50%", border: `1px solid ${G.bdr}`, background: "transparent", fontSize: 12, color: G.tm, cursor: "pointer", padding: 0, lineHeight: 1, flexShrink: 0 }}>✕</button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
                 {/* Trip summary */}
                 {mindfulReport.trips.length > 0 && (
                   <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${G.bg3}` }}>
@@ -1633,6 +1795,33 @@ ${breakdownHtml}
               );
             })()}
 
+            {/* Day-of-week bars */}
+            {dowBars.some(d => d.value > 0) && (() => {
+              const maxVal = Math.max(...dowBars.map(d => d.value));
+              return (
+                <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
+                    By Day <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· {insPeriod === "week" ? "this week" : "avg per day"}</span>
+                  </div>
+                  {dowBars.map((d, i) => {
+                    const pct = maxVal > 0 ? (d.value / maxVal) * 100 : 0;
+                    const isMax = d.value > 0 && d.value === maxVal;
+                    return (
+                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                        <span style={{ fontSize: 12, color: G.t3, fontWeight: 600, width: 30, flexShrink: 0 }}>{d.label}</span>
+                        <div style={{ flex: 1, height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}>
+                          <div style={{ height: 7, borderRadius: 8, width: `${pct}%`, background: isMax ? "#FF9500" : G.bk, transition: "width .4s" }} />
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: d.value > 0 ? 700 : 400, color: d.value > 0 ? G.t1 : G.tm, width: 58, textAlign: "right", flexShrink: 0 }}>
+                          {d.value > 0 ? formatINR(Math.round(d.value)) : "—"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
             <div style={{ marginBottom: 22 }}>
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>By Category <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· tap to filter history</span></div>
               {(() => {
@@ -1642,9 +1831,10 @@ ${breakdownHtml}
                   const c = cid === "uncategorized" ? UNCAT : (allCats.find(x => x.id === cid) || cats[0]);
                   const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
                   const barCol = catColorMap[cid] || "#8E8E93";
-                  const d = pctDelta(a, prevIns.bc[cid] || 0);
+                  const prevAmt = prevIns.bc[cid] || 0;
+                  const d = pctDelta(a, prevAmt);
                   return (
-                    <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
+                    <div key={cid} onClick={() => { hap(); setSelTrip(null); setFPay("all"); setSq(""); setFCat(cid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setHistWeek(insWeek); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); localStorage.setItem("histWeek", JSON.stringify(insWeek)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 24, fontSize: 15, color: G.t2, marginBottom: 5 }}>
                         <span style={{ ...gujStyle(c.label, 15), flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginRight: 8 }}>{c.icon} {c.label}</span>
                         <span style={{ flexShrink: 0, whiteSpace: "nowrap" }}>
@@ -1652,7 +1842,11 @@ ${breakdownHtml}
                           <span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span>
                         </span>
                       </div>
-                      <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}><div style={{ height: 7, borderRadius: 8, background: barCol, width: `${p}%`, transition: "width .4s" }} /></div>
+                      <div style={{ height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden", position: "relative" }}>
+                        {prevAmt > 0 && ins.totM > 0 && <div style={{ position: "absolute", height: 7, borderRadius: 8, background: barCol, opacity: 0.25, width: `${Math.min(prevAmt / ins.totM * 100, 100)}%` }} />}
+                        <div style={{ height: 7, borderRadius: 8, background: barCol, width: `${p}%`, transition: "width .4s", position: "relative" }} />
+                      </div>
+                      {prevAmt > 0 && <div style={{ fontSize: 11, color: G.tm, marginTop: 2, textAlign: "right" }}>vs {formatINR(prevAmt)} last</div>}
                     </div>
                   );
                 });
@@ -1670,7 +1864,7 @@ ${breakdownHtml}
               <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>By Payment Mode <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>{"\u00B7"} tap to filter history</span></div>
               {(() => { const PAY_COLORS = ["#3498DB", "#2ECC71", "#E74C3C", "#F39C12", "#9B59B6", "#1ABC9C"]; return Object.entries(ins.bp).sort((a, b) => b[1] - a[1]).map(([pid, a], i) => {
                 const p = ins.totM > 0 ? (a / ins.totM * 100) : 0;
-                return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
+                return (<div key={pid} onClick={() => { hap(); setSelTrip(null); setFCat("all"); setSq(""); setFPay(pid); setHistPeriod(insPeriod); setHistMonth(insMonth); setHistYear(insYear); setHistWeek(insWeek); try { localStorage.setItem("histPeriod", insPeriod); localStorage.setItem("histMonth", JSON.stringify(insMonth)); localStorage.setItem("histYear", String(insYear)); localStorage.setItem("histWeek", JSON.stringify(insWeek)); } catch {} setSw({ id: null, dir: null }); setSwipeConf(null); setView("list"); }} style={{ marginBottom: 14, cursor: "pointer" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 15, color: G.t2, marginBottom: 5 }}>
                     <span>{getPayLabel(pid)}</span>
                     <span style={{ flexShrink: 0 }}><span style={{ fontWeight: 700, color: G.t1 }}>{formatINR(a)}</span><span style={{ fontSize: 12, color: G.tm, fontWeight: 400, marginLeft: 4 }}>({Math.round(p)}%)</span></span>

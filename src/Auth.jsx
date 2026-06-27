@@ -82,6 +82,43 @@ function useStats() {
   return stats;
 }
 
+function useStatsHistory() {
+  const [history, setHistory] = useState(null);
+  useEffect(() => {
+    fetch("/api/stats-history").then(r => r.json()).then(d => { if (d.ok) setHistory(d.weeks); }).catch(() => {});
+  }, []);
+  return history;
+}
+
+function ActivityChart({ weeks }) {
+  if (!weeks || weeks.length < 2) return null;
+  const maxEntries = Math.max(...weeks.map(w => w.entries), 1);
+  const maxUsers = Math.max(...weeks.map(w => w.users), 1);
+  const W = 280, H = 90, barW = Math.floor((W - 8) / weeks.length) - 2;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 90 }}>
+      {weeks.map((w, i) => {
+        const x = 4 + i * (barW + 2);
+        const barH = Math.max(2, Math.round((w.entries / maxEntries) * (H - 20)));
+        const dotY = Math.round(H - 12 - (w.users / maxUsers) * (H - 24));
+        return (
+          <g key={w.week_start}>
+            <rect x={x} y={H - 12 - barH} width={barW} height={barH} rx={2} fill="#111" opacity={0.15} />
+            <circle cx={x + barW / 2} cy={dotY} r={2.5} fill="#FF9500" />
+          </g>
+        );
+      })}
+      {/* Axis line */}
+      <line x1={4} y1={H - 12} x2={W - 4} y2={H - 12} stroke={G.bdr} strokeWidth={1} />
+      {/* Legend */}
+      <rect x={4} y={H - 9} width={8} height={4} rx={1} fill="#111" opacity={0.3} />
+      <text x={15} y={H - 5} fontSize={7} fill={G.t3}>entries</text>
+      <circle cx={60} cy={H - 7} r={2.5} fill="#FF9500" />
+      <text x={65} y={H - 5} fontSize={7} fill={G.t3}>active users</text>
+    </svg>
+  );
+}
+
 function AuthInner() {
   const [mode,     setMode]     = useState("login");   // "login" | "register" | "forgot"
   const [email,    setEmail]    = useState("");
@@ -90,6 +127,7 @@ function AuthInner() {
   const [info,     setInfo]     = useState("");
   const [busy,     setBusy]     = useState(false);
   const stats = useStats();
+  const history = useStatsHistory();
 
   const reset = (m) => { setMode(m); setErr(""); setInfo(""); };
 
@@ -272,14 +310,14 @@ function AuthInner() {
         </div>
       )}
 
-      {/* Anonymous aggregate stats */}
+      {/* Anonymous aggregate stats + activity chart */}
       {stats && (
         <div style={{ marginTop: 28, borderTop: `1px solid ${G.bdr}`, paddingTop: 20 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: G.tm, textTransform: "uppercase",
                         letterSpacing: 1.2, textAlign: "center", marginBottom: 12 }}>
             Community Stats
           </div>
-          <div style={{ display: "flex", gap: 8 }}>
+          <div style={{ display: "flex", gap: 8, marginBottom: history && history.length >= 2 ? 14 : 0 }}>
             {[
               { label: "Expenses logged", value: stats.total_expenses.toLocaleString("en-IN") },
               { label: "This week", value: stats.expenses_this_week.toLocaleString("en-IN") },
@@ -296,6 +334,14 @@ function AuthInner() {
               </div>
             ))}
           </div>
+          {history && history.length >= 2 && (
+            <div style={{ background: G.bg2, borderRadius: 12, padding: "12px 12px 8px" }}>
+              <div style={{ fontSize: 10, color: G.t3, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.8, marginBottom: 8 }}>
+                Activity · last {history.length} weeks
+              </div>
+              <ActivityChart weeks={history} />
+            </div>
+          )}
         </div>
       )}
     </div>

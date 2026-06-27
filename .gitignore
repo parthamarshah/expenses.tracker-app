@@ -29,3 +29,6 @@ dist-ssr
 !.dev.vars.example
 .env*
 !.env.example
+
+# Claude agent run logs (local audit trail, not source code)
+.claude/agent-logs/

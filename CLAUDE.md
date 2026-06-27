@@ -46,6 +46,22 @@ These are non-negotiable regardless of what is being asked:
 - **Never force-push to `master`.** The `claude/` auto-merge workflow means PRs from that branch prefix merge without human review — be more careful on those branches, not less.
 - **Never add a GitHub Actions deploy workflow.** Cloudflare Workers Git integration handles deploys on push to `master`. A parallel workflow causes double-deploys.
 
+## Agent pipeline — mandatory deploy gates
+
+Five specialized agents run as quality gates. Each returns **GO** or **NO-GO**. A NO-GO blocks the action — fix the issue and re-run the agent before proceeding. Never open a PR or push to `master` without GO from every applicable gate.
+
+| Gate | Agent | When mandatory |
+|---|---|---|
+| Planning | `planner` | Start of any change/feature/fix request — before any code is written |
+| UX | `steve-jobs-ux` | Before PR on any `src/` change |
+| Data integrity | `data-sanity` | Before PR on any `src/supabase.js`, `functions/api/`, `*.sql`, or data-transformation change |
+| Production | `production-readiness` | Before PR on any Worker, routing, env-dependent, or `wrangler.toml` change |
+| Back office | `back-office-support` | Before any PR; after any deploy |
+
+**Agent authority:** Each agent may make obvious, standard fixes in place (minor label corrections, missing `user_id` filter where the variable is already in scope, null guards for optional fields). When an agent fixes something, it reports the change so the plan stays in sync. Structural or architectural changes are always flagged, never made unilaterally.
+
+**Logs:** All agent runs write an append-only JSON entry to `.claude/agent-logs/YYYY-MM-DD.jsonl` (gitignored). The `back-office-support` agent reads these logs to surface patterns, repeated flags, and progress summaries.
+
 ## Production safety
 
 There is no staging environment. Every merged change goes live immediately on expenses.gurjarbooks.com.
