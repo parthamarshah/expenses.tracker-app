@@ -99,10 +99,15 @@ const periodLabel = (period) => {
     const [wy, wm, wd] = period.weekStart.split("-").map(Number);
     const start = new Date(wy, wm - 1, wd);
     const end = new Date(wy, wm - 1, wd + 6);
+    if (start.getMonth() === end.getMonth()) {
+      // Same month: "22–28 Jun" — month appears once at the end, unambiguous range
+      const startDay = start.toLocaleDateString("en-IN", { day: "numeric" });
+      const endStr = end.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+      return `${startDay}–${endStr}`;
+    }
+    // Cross-month: "29 Jun–5 Jul"
     const startStr = start.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
-    const endStr = start.getMonth() === end.getMonth()
-      ? end.toLocaleDateString("en-IN", { day: "numeric" })
-      : end.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
+    const endStr = end.toLocaleDateString("en-IN", { day: "numeric", month: "short" });
     return `${startStr}–${endStr}`;
   }
   return new Date(period.year, period.month, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
@@ -1178,9 +1183,6 @@ ${breakdownHtml}
     }
   }, [insPeriod]);
 
-  const cyclePeriod = useCallback(() => {
-    setInsPeriod(p => p === "month" ? "week" : p === "week" ? "year" : "month");
-  }, []);
 
   // History period helpers
   const histPeriodLabel = useMemo(() => {
@@ -1246,63 +1248,48 @@ ${breakdownHtml}
     return { projected, pct, daysElapsed, daysTotal };
   }, [insPeriod, insWeek, insMonth, ins.totM, prevIns.totM]);
 
-  // ── Day-of-week bars ───────────────────────────────────────────────────────
-  const dowBars = useMemo(() => {
-    const days = Array.from({ length: 7 }, () => ({ total: 0, count: 0 }));
-    const periodExps = exps.filter(e => {
-      if (e.category === "investment") return false;
-      if (insExTrips && e.tripId) return false;
-      return inPeriodFor(e, insAsPeriod);
+  // ── Calendar heatmap ─────────────────────────────────────────────────────
+  const calendarHeatmap = useMemo(() => {
+    const byDate = {};
+    const dowTotals = [0, 0, 0, 0, 0, 0, 0];
+    exps.forEach(e => {
+      if (e.category === "investment") return;
+      if (insExTrips && e.tripId) return;
+      if (!inPeriodFor(e, insAsPeriod)) return;
+      byDate[e.date] = (byDate[e.date] || 0) + e.amount;
+      dowTotals[(new Date(e.date).getDay() + 6) % 7] += e.amount;
     });
-    periodExps.forEach(e => {
-      const dow = (new Date(e.date).getDay() + 6) % 7; // Mon=0 … Sun=6
-      days[dow].total += e.amount;
-      days[dow].count++;
-    });
-    const isWeek = insPeriod === "week";
-    return days.map((d, i) => ({
-      label: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][i],
-      value: isWeek ? d.total : (d.count > 0 ? d.total / d.count : 0),
-      count: d.count,
-    }));
-  }, [exps, insAsPeriod, insExTrips, insPeriod]);
-
-  // ── Recurring expense detection ────────────────────────────────────────────
-  const recurringItems = useMemo(() => {
-    const cutoff = new Date();
-    cutoff.setMonth(cutoff.getMonth() - 4);
-    const history = exps.filter(e => new Date(e.date) >= cutoff && e.category !== "investment");
-    const dismissed = new Set(mindfulPrefs.dismissedRecurring || []);
-    const groups = new Map();
-    history.forEach(e => {
-      const bucket = Math.round(e.amount / 50) * 50;
-      const key = `${e.category}:${bucket}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(e);
-    });
-    const found = [];
-    for (const [key, entries] of groups) {
-      if (dismissed.has(key)) continue;
-      if (entries.length < 3) continue;
-      const dates = entries.map(e => new Date(e.date)).sort((a, b) => a - b);
-      const intervals = dates.slice(1).map((d, i) => (d - dates[i]) / 86400000);
-      const avg = intervals.reduce((s, v) => s + v, 0) / intervals.length;
-      const std = Math.sqrt(intervals.reduce((s, v) => s + (v - avg) ** 2, 0) / intervals.length);
-      if (avg === 0 || std / avg > 0.4) continue;
-      const freq = avg <= 2 ? "daily" : avg <= 10 ? "weekly" : avg <= 35 ? "monthly" : null;
-      if (!freq) continue;
-      const [catId] = key.split(":");
-      const avgAmt = entries.reduce((s, e) => s + e.amount, 0) / entries.length;
-      found.push({ key, catId, avgAmt, freq, count: entries.length });
+    if (!Object.keys(byDate).length) return null;
+    let gridStart, gridEnd;
+    if (insAsPeriod.scope === "month") {
+      const { year, month } = insAsPeriod;
+      const startDow = (new Date(year, month, 1).getDay() + 6) % 7;
+      gridStart = new Date(year, month, 1 - startDow);
+      gridEnd = new Date(year, month + 1, 0);
+    } else if (insAsPeriod.scope === "week") {
+      const [wy, wm, wd] = insAsPeriod.weekStart.split("-").map(Number);
+      gridStart = new Date(wy, wm - 1, wd);
+      gridEnd = new Date(wy, wm - 1, wd + 6);
+    } else {
+      const startDow = (new Date(insAsPeriod.year, 0, 1).getDay() + 6) % 7;
+      gridStart = new Date(insAsPeriod.year, 0, 1 - startDow);
+      gridEnd = new Date(insAsPeriod.year, 11, 31);
     }
-    return found.sort((a, b) => b.avgAmt - a.avgAmt);
-  }, [exps, mindfulPrefs.dismissedRecurring]);
+    const weeks = [];
+    const cur = new Date(gridStart);
+    while (cur <= gridEnd) {
+      const week = [];
+      for (let d = 0; d < 7; d++) {
+        const ds = toLocalISO(cur);
+        week.push({ date: ds, value: byDate[ds] || 0, inPeriod: inPeriodFor({ date: ds }, insAsPeriod) });
+        cur.setDate(cur.getDate() + 1);
+      }
+      weeks.push(week);
+    }
+    const maxVal = Math.max(...Object.values(byDate));
+    return { weeks, dowTotals, maxVal };
+  }, [exps, insAsPeriod, insExTrips]);
 
-  const dismissRecurring = useCallback((key) => {
-    const current = mindfulPrefsRef.current.dismissedRecurring || [];
-    if (current.includes(key)) return;
-    saveMindfulPrefs({ dismissedRecurring: [...current, key] });
-  }, [saveMindfulPrefs]);
 
   // ── Trip insights ─────────────────────────────────────────────────────────
   const getTI = useCallback((tid) => {
@@ -1576,15 +1563,27 @@ ${breakdownHtml}
           <div style={{ padding: "16px 16px" }}>
 
             {/* Period navigator */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14, background: G.bg2, borderRadius: 12, padding: "4px 4px" }}>
-              <button onClick={() => shiftPeriod(-1)}
-                style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>‹</button>
-              <button onClick={cyclePeriod}
-                style={{ flex: 1, padding: "7px 0", border: "none", background: "transparent", fontSize: 14, fontWeight: 700, cursor: "pointer", color: G.t1, textAlign: "center" }}>
-                {insPeriodLabel}
-              </button>
-              <button onClick={() => shiftPeriod(1)}
-                style={{ width: 36, height: 36, borderRadius: 9, border: "none", background: "transparent", fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>›</button>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ display: "flex", background: G.bg2, borderRadius: 10, padding: 3, marginBottom: 7 }}>
+                {[["week", "Week"], ["month", "Month"], ["year", "Year"]].map(([p, label]) => (
+                  <button key={p} onClick={() => { hap(); setInsPeriod(p); }}
+                    style={{ flex: 1, padding: "14px 0", border: "none", borderRadius: 7,
+                             background: insPeriod === p ? G.bg : "transparent",
+                             fontWeight: insPeriod === p ? 700 : 500,
+                             color: insPeriod === p ? G.t1 : G.t3,
+                             fontSize: 13, cursor: "pointer",
+                             boxShadow: insPeriod === p ? "0 1px 3px rgba(0,0,0,0.1)" : "none" }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <button onClick={() => shiftPeriod(-1)} aria-label="Previous period"
+                  style={{ width: 44, height: 44, borderRadius: 9, border: "none", background: G.bg2, fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>‹</button>
+                <span style={{ fontSize: 14, fontWeight: 700, color: G.t1 }}>{insPeriodLabel}</span>
+                <button onClick={() => shiftPeriod(1)} aria-label="Next period"
+                  style={{ width: 44, height: 44, borderRadius: 9, border: "none", background: G.bg2, fontSize: 18, cursor: "pointer", color: G.t1, fontWeight: 600 }}>›</button>
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
@@ -1710,30 +1709,6 @@ ${breakdownHtml}
                   </>
                 )}
 
-                {/* Fixed Costs (recurring detection) */}
-                {recurringItems.length > 0 && (() => {
-                  const totalRecurring = recurringItems.reduce((s, r) => s + r.avgAmt, 0);
-                  return (
-                    <div style={{ marginTop: 10, paddingTop: 8, borderTop: `1px solid ${G.bg3}` }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                        <div style={{ fontSize: 10, color: G.t3, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.6 }}>Fixed Costs</div>
-                        <div style={{ fontSize: 13, fontWeight: 700, color: G.t1 }}>{formatINR(Math.round(totalRecurring))}<span style={{ fontSize: 10, color: G.tm, fontWeight: 400, marginLeft: 3 }}>/period</span></div>
-                      </div>
-                      {recurringItems.map(r => {
-                        const cat = allCats.find(c => c.id === r.catId) || { icon: "📦", label: r.catId };
-                        const freqColors = { daily: "#3498DB", weekly: "#9B59B6", monthly: "#E67E22" };
-                        return (
-                          <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5, fontSize: 13 }}>
-                            <span style={{ ...gujStyle(cat.label, 13), flex: 1, color: G.t2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cat.icon} {cat.label}</span>
-                            <span style={{ fontSize: 11, fontWeight: 600, color: freqColors[r.freq] || G.t3, background: `${freqColors[r.freq]}18`, padding: "1px 6px", borderRadius: 4 }}>{r.freq}</span>
-                            <span style={{ fontWeight: 700, color: G.t1, minWidth: 52, textAlign: "right" }}>{formatINR(Math.round(r.avgAmt))}</span>
-                            <button onClick={() => { hap(); dismissRecurring(r.key); }} title="Dismiss" style={{ width: 20, height: 20, borderRadius: "50%", border: `1px solid ${G.bdr}`, background: "transparent", fontSize: 12, color: G.tm, cursor: "pointer", padding: 0, lineHeight: 1, flexShrink: 0 }}>✕</button>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
 
                 {/* Trip summary */}
                 {mindfulReport.trips.length > 0 && (
@@ -1795,29 +1770,64 @@ ${breakdownHtml}
               );
             })()}
 
-            {/* Day-of-week bars */}
-            {dowBars.some(d => d.value > 0) && (() => {
-              const maxVal = Math.max(...dowBars.map(d => d.value));
+            {/* Calendar heatmap */}
+            {calendarHeatmap && (() => {
+              const { weeks, dowTotals, maxVal } = calendarHeatmap;
+              const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+              const isYear = insPeriod === "year";
+              const isWeek = insPeriod === "week";
+              const cellH = isYear ? 10 : 26;
+              const cellGap = isYear ? 2 : 3;
+              const labelW = isYear ? 20 : 26;
+              const heatColor = (cell) => {
+                if (!cell.inPeriod) return "transparent";
+                if (!cell.value || maxVal === 0) return "rgba(139,92,246,0.20)";
+                const t = Math.sqrt(cell.value / maxVal);
+                return `rgba(139,92,246,${(0.30 + 0.70 * t).toFixed(2)})`;
+              };
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
                   <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
-                    By Day <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· {insPeriod === "week" ? "this week" : "avg per day"}</span>
+                    By Day <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· {isWeek ? "this week" : "spending heatmap"}</span>
                   </div>
-                  {dowBars.map((d, i) => {
-                    const pct = maxVal > 0 ? (d.value / maxVal) * 100 : 0;
-                    const isMax = d.value > 0 && d.value === maxVal;
-                    return (
-                      <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                        <span style={{ fontSize: 12, color: G.t3, fontWeight: 600, width: 30, flexShrink: 0 }}>{d.label}</span>
-                        <div style={{ flex: 1, height: 7, background: G.bg3, borderRadius: 8, overflow: "hidden" }}>
-                          <div style={{ height: 7, borderRadius: 8, width: `${pct}%`, background: isMax ? "#FF9500" : G.bk, transition: "width .4s" }} />
+                  <div style={{ overflowX: isYear ? "auto" : "visible" }}>
+                    <div style={{ minWidth: isYear ? `${labelW + 4 + weeks.length * (10 + cellGap)}px` : undefined }}>
+                      {DOW.map((label, dow) => (
+                        <div key={dow} style={{ display: "flex", gap: cellGap, alignItems: "center", marginBottom: cellGap }}>
+                          <span style={{ width: labelW, fontSize: 11, color: G.t3, fontWeight: 500, textAlign: "right", paddingRight: isYear ? 2 : 4, flexShrink: 0 }}>{label}</span>
+                          {weeks.map((week, wi) => {
+                            const cell = week[dow];
+                            return (
+                              <div key={wi} style={{
+                                flex: isYear ? "0 0 10px" : 1,
+                                height: cellH,
+                                borderRadius: isYear ? 2 : 5,
+                                background: heatColor(cell),
+                              }} />
+                            );
+                          })}
+                          {!isYear && (
+                            <span style={{ width: 44, fontSize: 11, color: G.t3, textAlign: "right", flexShrink: 0, fontWeight: 500 }}>
+                              {dowTotals[dow] > 0 ? formatINR(Math.round(dowTotals[dow])) : ""}
+                            </span>
+                          )}
                         </div>
-                        <span style={{ fontSize: 12, fontWeight: d.value > 0 ? 700 : 400, color: d.value > 0 ? G.t1 : G.tm, width: 58, textAlign: "right", flexShrink: 0 }}>
-                          {d.value > 0 ? formatINR(Math.round(d.value)) : "—"}
-                        </span>
-                      </div>
-                    );
-                  })}
+                      ))}
+                      {insPeriod === "month" && (
+                        <div style={{ display: "flex", gap: cellGap, marginTop: 4 }}>
+                          <span style={{ width: labelW, flexShrink: 0 }} />
+                          {weeks.map((week, wi) => {
+                            const d = week.find(c => c.inPeriod);
+                            const day = d ? parseInt(d.date.split("-")[2]) : null;
+                            return (
+                              <div key={wi} style={{ flex: 1, fontSize: 10, color: G.tm, textAlign: "center" }}>{day || ""}</div>
+                            );
+                          })}
+                          <span style={{ width: 44, flexShrink: 0 }} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               );
             })()}

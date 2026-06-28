@@ -92,29 +92,33 @@ function useStatsHistory() {
 
 function ActivityChart({ weeks }) {
   if (!weeks || weeks.length < 2) return null;
-  const maxEntries = Math.max(...weeks.map(w => w.entries), 1);
-  const maxUsers = Math.max(...weeks.map(w => w.users), 1);
-  const W = 280, H = 90, barW = Math.floor((W - 8) / weeks.length) - 2;
+  const W = 280, H = 90;
+  // Build cumulative entry counts
+  const points = weeks.reduce((acc, w, i) => {
+    const cumulative = (acc[i - 1]?.cumulative ?? 0) + w.entries;
+    const x = 4 + (i / (weeks.length - 1)) * (W - 8);
+    return [...acc, { x, cumulative, i }];
+  }, []);
+  const maxVal = points[points.length - 1].cumulative || 1;
+  const toY = (v) => H - 16 - Math.round((v / maxVal) * (H - 28));
+  const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x.toFixed(1)} ${toY(p.cumulative)}`).join(" ");
+  const areaPath = `${linePath} L ${points[points.length - 1].x.toFixed(1)} ${H - 16} L ${points[0].x.toFixed(1)} ${H - 16} Z`;
+  const endX = points[points.length - 1].x;
+  const endY = toY(points[points.length - 1].cumulative);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 90 }}>
-      {weeks.map((w, i) => {
-        const x = 4 + i * (barW + 2);
-        const barH = Math.max(2, Math.round((w.entries / maxEntries) * (H - 20)));
-        const dotY = Math.round(H - 12 - (w.users / maxUsers) * (H - 24));
-        return (
-          <g key={w.week_start}>
-            <rect x={x} y={H - 12 - barH} width={barW} height={barH} rx={2} fill="#111" opacity={0.15} />
-            <circle cx={x + barW / 2} cy={dotY} r={2.5} fill="#FF9500" />
-          </g>
-        );
-      })}
-      {/* Axis line */}
-      <line x1={4} y1={H - 12} x2={W - 4} y2={H - 12} stroke={G.bdr} strokeWidth={1} />
-      {/* Legend */}
-      <rect x={4} y={H - 9} width={8} height={4} rx={1} fill="#111" opacity={0.3} />
-      <text x={15} y={H - 5} fontSize={7} fill={G.t3}>entries</text>
-      <circle cx={60} cy={H - 7} r={2.5} fill="#FF9500" />
-      <text x={65} y={H - 5} fontSize={7} fill={G.t3}>active users</text>
+      <defs>
+        <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#FF9500" stopOpacity="0.25" />
+          <stop offset="100%" stopColor="#FF9500" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      <path d={areaPath} fill="url(#cg)" />
+      <path d={linePath} fill="none" stroke="#FF9500" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={endX.toFixed(1)} cy={endY} r={3} fill="#FF9500" />
+      <line x1={4} y1={H - 16} x2={W - 4} y2={H - 16} stroke={G.bdr} strokeWidth={1} />
+      <text x={4} y={H - 5} fontSize={7} fill={G.t3}>13 weeks · total entries</text>
+      <text x={W - 4} y={H - 5} fontSize={7} fill="#FF9500" textAnchor="end">{points[points.length - 1].cumulative.toLocaleString("en-IN")}</text>
     </svg>
   );
 }
