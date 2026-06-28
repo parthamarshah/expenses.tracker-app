@@ -1256,7 +1256,8 @@ ${breakdownHtml}
       if (e.category === "investment") return;
       if (insExTrips && e.tripId) return;
       if (!inPeriodFor(e, insAsPeriod)) return;
-      byDate[e.date] = (byDate[e.date] || 0) + e.amount;
+      const dk = toLocalISO(new Date(e.date)); // normalize timestamptz → "YYYY-MM-DD"
+      byDate[dk] = (byDate[dk] || 0) + e.amount;
       dowTotals[(new Date(e.date).getDay() + 6) % 7] += e.amount;
     });
     if (!Object.keys(byDate).length) return null;
@@ -1776,58 +1777,75 @@ ${breakdownHtml}
               const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
               const isYear = insPeriod === "year";
               const isWeek = insPeriod === "week";
-              const cellH = isYear ? 10 : 26;
-              const cellGap = isYear ? 2 : 3;
-              const labelW = isYear ? 20 : 26;
               const heatColor = (cell) => {
-                if (!cell.inPeriod) return "transparent";
-                if (!cell.value || maxVal === 0) return "rgba(139,92,246,0.20)";
+                if (!cell || !cell.inPeriod) return "transparent";
+                if (!cell.value || maxVal === 0) return "rgba(139,92,246,0.18)";
                 const t = Math.sqrt(cell.value / maxVal);
-                return `rgba(139,92,246,${(0.30 + 0.70 * t).toFixed(2)})`;
+                return `rgba(139,92,246,${(0.32 + 0.68 * t).toFixed(2)})`;
               };
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
                   <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
                     By Day <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· {isWeek ? "this week" : "spending heatmap"}</span>
                   </div>
-                  <div style={{ overflowX: isYear ? "auto" : "visible" }}>
-                    <div style={{ minWidth: isYear ? `${labelW + 4 + weeks.length * (10 + cellGap)}px` : undefined }}>
-                      {DOW.map((label, dow) => (
-                        <div key={dow} style={{ display: "flex", gap: cellGap, alignItems: "center", marginBottom: cellGap }}>
-                          <span style={{ width: labelW, fontSize: 11, color: G.t3, fontWeight: 500, textAlign: "right", paddingRight: isYear ? 2 : 4, flexShrink: 0 }}>{label}</span>
-                          {weeks.map((week, wi) => {
-                            const cell = week[dow];
-                            return (
-                              <div key={wi} style={{
-                                flex: isYear ? "0 0 10px" : 1,
-                                height: cellH,
-                                borderRadius: isYear ? 2 : 5,
-                                background: heatColor(cell),
-                              }} />
-                            );
-                          })}
-                          {!isYear && (
-                            <span style={{ width: 44, fontSize: 11, color: G.t3, textAlign: "right", flexShrink: 0, fontWeight: 500 }}>
-                              {dowTotals[dow] > 0 ? formatINR(Math.round(dowTotals[dow])) : ""}
+
+                  {isWeek ? (
+                    /* Week: 7 square cells side by side, label above, amount below */
+                    <div style={{ display: "flex", gap: 5 }}>
+                      {DOW.map((label, dow) => {
+                        const cell = weeks[0]?.[dow];
+                        return (
+                          <div key={dow} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                            <span style={{ fontSize: 10, color: G.t3, fontWeight: 500 }}>{label}</span>
+                            <div style={{ width: "100%", aspectRatio: "1", borderRadius: 5, background: heatColor(cell) }} />
+                            <span style={{ fontSize: 10, color: G.t2, fontWeight: cell?.value > 0 ? 600 : 400, textAlign: "center" }}>
+                              {cell?.value > 0 ? formatINR(Math.round(cell.value)) : "—"}
                             </span>
-                          )}
-                        </div>
-                      ))}
-                      {insPeriod === "month" && (
-                        <div style={{ display: "flex", gap: cellGap, marginTop: 4 }}>
-                          <span style={{ width: labelW, flexShrink: 0 }} />
-                          {weeks.map((week, wi) => {
-                            const d = week.find(c => c.inPeriod);
-                            const day = d ? parseInt(d.date.split("-")[2]) : null;
-                            return (
-                              <div key={wi} style={{ flex: 1, fontSize: 10, color: G.tm, textAlign: "center" }}>{day || ""}</div>
-                            );
-                          })}
-                          <span style={{ width: 44, flexShrink: 0 }} />
-                        </div>
-                      )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  </div>
+                  ) : (
+                    /* Month / Year: rows = DoW, columns = weeks */
+                    <div style={{ overflowX: isYear ? "auto" : "visible" }}>
+                      <div style={{ minWidth: isYear ? `${22 + weeks.length * 12}px` : undefined }}>
+                        {DOW.map((label, dow) => (
+                          <div key={dow} style={{ display: "flex", gap: isYear ? 2 : 3, alignItems: "center", marginBottom: isYear ? 2 : 3 }}>
+                            <span style={{ width: isYear ? 20 : 26, fontSize: 11, color: G.t3, fontWeight: 500, textAlign: "right", paddingRight: isYear ? 2 : 4, flexShrink: 0 }}>{label}</span>
+                            {weeks.map((week, wi) => {
+                              const cell = week[dow];
+                              return (
+                                <div key={wi} style={{
+                                  flex: isYear ? "0 0 10px" : 1,
+                                  height: isYear ? 10 : 20,
+                                  borderRadius: isYear ? 2 : 4,
+                                  background: heatColor(cell),
+                                }} />
+                              );
+                            })}
+                            {!isYear && (
+                              <span style={{ width: 44, fontSize: 11, color: G.t3, textAlign: "right", flexShrink: 0, fontWeight: 500 }}>
+                                {dowTotals[dow] > 0 ? formatINR(Math.round(dowTotals[dow])) : ""}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                        {!isYear && (
+                          <div style={{ display: "flex", gap: 3, marginTop: 4 }}>
+                            <span style={{ width: 26, flexShrink: 0 }} />
+                            {weeks.map((week, wi) => {
+                              const d = week.find(c => c.inPeriod);
+                              const day = d ? parseInt(d.date.split("-")[2]) : null;
+                              return (
+                                <div key={wi} style={{ flex: 1, fontSize: 10, color: G.tm, textAlign: "center" }}>{day || ""}</div>
+                              );
+                            })}
+                            <span style={{ width: 44, flexShrink: 0 }} />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })()}
