@@ -1288,7 +1288,16 @@ ${breakdownHtml}
       weeks.push(week);
     }
     const maxVal = Math.max(...Object.values(byDate));
-    return { weeks, dowTotals, maxVal };
+    // Month labels for year view — position of each month's first week column
+    const MNAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const monthLabels = insAsPeriod.scope === "year"
+      ? MNAMES.map((label, m) => {
+          const dayOff = Math.round((new Date(insAsPeriod.year, m, 1) - gridStart) / 864e5);
+          const col = Math.floor(dayOff / 7);
+          return col >= 0 && col < weeks.length ? { label, col } : null;
+        }).filter(Boolean)
+      : [];
+    return { weeks, dowTotals, maxVal, monthLabels };
   }, [exps, insAsPeriod, insExTrips]);
 
 
@@ -1773,24 +1782,29 @@ ${breakdownHtml}
 
             {/* Calendar heatmap */}
             {calendarHeatmap && (() => {
-              const { weeks, dowTotals, maxVal } = calendarHeatmap;
+              const { weeks, dowTotals, maxVal, monthLabels } = calendarHeatmap;
               const DOW = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
               const isYear = insPeriod === "year";
               const isWeek = insPeriod === "week";
               const heatColor = (cell) => {
                 if (!cell || !cell.inPeriod) return "transparent";
-                if (!cell.value || maxVal === 0) return "rgba(139,92,246,0.18)";
+                if (!cell.value || maxVal === 0) return "rgba(0,122,255,0.09)";
                 const t = Math.sqrt(cell.value / maxVal);
-                return `rgba(139,92,246,${(0.32 + 0.68 * t).toFixed(2)})`;
+                return `rgba(0,122,255,${(0.22 + 0.78 * t).toFixed(2)})`;
               };
+              // Compact amount for week cells (no ₹ repetition)
+              const fmtW = v => v >= 10000 ? `${Math.round(v/1000)}k`
+                : v >= 1000 ? `${(v/1000).toFixed(1).replace(/\.0$/,'')}k`
+                : String(Math.round(v));
+              const subtitle = isWeek ? "this week" : isYear ? "year at a glance" : "month at a glance";
               return (
                 <div style={{ marginBottom: 22, background: G.bg2, borderRadius: 14, padding: "16px 14px", border: `1px solid ${G.bdr}` }}>
                   <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 12 }}>
-                    By Day <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· {isWeek ? "this week" : "spending heatmap"}</span>
+                    By Day <span style={{ fontSize: 12, color: G.tm, fontWeight: 400 }}>· {subtitle}</span>
                   </div>
 
                   {isWeek ? (
-                    /* Week: 7 square cells side by side, label above, amount below */
+                    /* Week: 7 square cells side by side, day label above, bare number below */
                     <div style={{ display: "flex", gap: 5 }}>
                       {DOW.map((label, dow) => {
                         const cell = weeks[0]?.[dow];
@@ -1798,8 +1812,8 @@ ${breakdownHtml}
                           <div key={dow} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                             <span style={{ fontSize: 10, color: G.t3, fontWeight: 500 }}>{label}</span>
                             <div style={{ width: "100%", aspectRatio: "1", borderRadius: 5, background: heatColor(cell) }} />
-                            <span style={{ fontSize: 10, color: G.t2, fontWeight: cell?.value > 0 ? 600 : 400, textAlign: "center" }}>
-                              {cell?.value > 0 ? formatINR(Math.round(cell.value)) : "—"}
+                            <span style={{ fontSize: 10, color: G.t2, fontWeight: cell?.value > 0 ? 600 : 400 }}>
+                              {cell?.value > 0 ? fmtW(cell.value) : "—"}
                             </span>
                           </div>
                         );
@@ -1808,7 +1822,22 @@ ${breakdownHtml}
                   ) : (
                     /* Month / Year: rows = DoW, columns = weeks */
                     <div style={{ overflowX: isYear ? "auto" : "visible" }}>
-                      <div style={{ minWidth: isYear ? `${22 + weeks.length * 12}px` : undefined }}>
+                      <div style={{ minWidth: isYear ? `${22 + weeks.length * 12}px` : undefined, position: "relative" }}>
+                        {/* Year: month name labels above grid */}
+                        {isYear && (
+                          <div style={{ height: 14, position: "relative", marginBottom: 3 }}>
+                            {monthLabels.map(({ label, col }) => (
+                              <span key={label} style={{
+                                position: "absolute",
+                                left: `${24 + col * 12}px`,
+                                fontSize: 9,
+                                color: G.t3,
+                                fontWeight: 600,
+                                lineHeight: "14px",
+                              }}>{label}</span>
+                            ))}
+                          </div>
+                        )}
                         {DOW.map((label, dow) => (
                           <div key={dow} style={{ display: "flex", gap: isYear ? 2 : 3, alignItems: "center", marginBottom: isYear ? 2 : 3 }}>
                             <span style={{ width: isYear ? 20 : 26, fontSize: 11, color: G.t3, fontWeight: 500, textAlign: "right", paddingRight: isYear ? 2 : 4, flexShrink: 0 }}>{label}</span>
