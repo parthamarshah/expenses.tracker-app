@@ -57,7 +57,13 @@ export async function onRequestPost(context) {
   const payType = detectPayMode(sms, bank);
 
   // Step 3b: Match to user's configured banks (or auto-create one)
-  if (!payMode || payMode === "bank" || payMode === "card") {
+  if (payType === "cash") {
+    // ATM/cash withdrawals are never attributed to a specific bank/card account —
+    // skip last4/name matching entirely so it can't override this back to a matched
+    // account (last4 extraction is deliberately loose and can coincidentally match
+    // a registered card, e.g. an ATM withdrawal on the same card as recent purchases).
+    if (!payMode || payMode === "bank" || payMode === "card") payMode = "cash";
+  } else if (!payMode || payMode === "bank" || payMode === "card") {
     // Load user's bank config to match
     const { data: prefsRow } = await supabase
       .from("user_prefs")
@@ -70,8 +76,12 @@ export async function onRequestPost(context) {
       try { userBanks = JSON.parse(prefsRow.banks_json); } catch {}
     }
 
-    // Extract last4 from SMS for matching
-    const last4Match = sms.match(/(?:XX?|xx?|ending|x{1,2})(\d{4})/);
+    // Extract last4 from SMS for matching. Masked form first (older SMS: "XX2660"),
+    // then bare form anchored to "card" only (newer HDFC SMS: "Card 2660", no mask).
+    // Deliberately not matching bare "a/c NNNN" — a transfer SMS can mention a
+    // beneficiary's account number before the sender's own, which would misattribute.
+    const last4Match = sms.match(/(?:XX?|xx?|ending|x{1,2})(\d{4})/)
+      || sms.match(/\bcard\s+(\d{4})\b/i);
     const smsLast4 = last4Match ? last4Match[1] : null;
 
     const bankNames = {
@@ -327,15 +337,17 @@ function isDebitSms(sms) {
 // STEP 3: Payment mode detection — bank-aware
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function detectPayMode(sms, bank) {
+  // ATM checked first — a card-linked SMS that also mentions withdrawal (masked or bare
+  // last4) is still a cash outflow, not a card spend.
+  if (/atm\s+(?:cash\s+)?withdraw|cash\s+withdrawal|withdrawn\s+at\s+atm/i.test(sms)) return "cash";
+
   // Credit card patterns (bank-specific + generic)
   if (/credit\s+card/i.test(sms)) return "card";
   if (/(?:indusind|hdfc|icici|axis|sbi|idfc|kotak|yes)\s+(?:bank\s+)?card\s+(?:x|xx|ending)/i.test(sms)) return "card";
-  if (/\bcard\s+(?:x|xx)\d{4}\b/i.test(sms)) return "card";
+  // Masked ("Card XX2660") or bare ("Card 2660") last4 — newer HDFC SMS omit the mask
+  if (/\bcard\s+(?:x|xx)?\d{4}\b/i.test(sms)) return "card";
   if (/(?:spent|charged).*\bcard\b/i.test(sms)) return "card";
   if (/\bAvl\s+Lmt\b/i.test(sms)) return "card"; // "Available Limit" = credit card
-
-  // ATM
-  if (/atm\s+(?:cash\s+)?withdraw|cash\s+withdrawal|withdrawn\s+at\s+atm/i.test(sms)) return "cash";
 
   return "bank";
 }
@@ -485,6 +497,15 @@ function parseSmsNote(sms, bank) {
 
   // Standing instruction / auto-debit
   if (/standing\s+instruction|auto.?debit|auto.?pay/i.test(sms)) return "Auto-debit";
+
+  // Card-linked UPI txn: "At <payee-token> ... by UPI <ref>" (e.g. newer HDFC RuPay-card-via-UPI SMS).
+  // The token is usually an opaque VPA/merchant id (e.g. "paytm-76881028@ptybl") with no separable
+  // human-readable name, so capture it verbatim rather than falling through to a truncated guess.
+  const upiViaCard = sms.match(/\bAt\s+([A-Za-z0-9][A-Za-z0-9@._-]*)\s+by\s+UPI\b/i);
+  if (upiViaCard) {
+    const token = upiViaCard[1].trim().slice(0, 50);
+    if (token.length >= 2 && !/^\d+$/.test(token)) return token;
+  }
 
   // ── Bank-specific note extraction ──
   let extracted = null;
