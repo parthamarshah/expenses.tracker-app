@@ -317,6 +317,8 @@ export default function ExpenseTracker() {
   const [deleting, setDeleting] = useState(false);
   const [onboardStep, setOnboardStep] = useState(null); // null = hidden, 0-2 = step index
   const [mindfulPrefs, setMindfulPrefs] = useState({ essentialSigs: [], avoidableSigs: [], reviewedScopes: [], autoMonthlyPopup: true, forceEnabled: false });
+  const [smsTrainingOptOut, setSmsTrainingOptOut] = useState(false);
+  const [smsTrainingFeatureAvailable, setSmsTrainingFeatureAvailable] = useState(false);
   const [mindfulPopup, setMindfulPopup] = useState(null);
   const [mindfulOverrides, setMindfulOverrides] = useState({}); // { [scopeKey]: boolean } — per-session expansion override
   const [insCatExpanded, setInsCatExpanded] = useState(false);
@@ -345,12 +347,22 @@ export default function ExpenseTracker() {
     let mindfulPopupTimer;
 
     const init = async () => {
-      const [{ data: expRows }, { data: tripRows }, { data: prefsRow }] = await Promise.all([
+      const [{ data: expRows }, { data: tripRows }, { data: prefsRow }, smsPrefsResult] = await Promise.all([
         supabase.from("expenses").select("*").eq("user_id", userId).order("date", { ascending: false }),
         supabase.from("trips").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
         supabase.from("user_prefs").select("cats_json, banks_json, mindful_json").eq("user_id", userId).maybeSingle(),
+        // Separate query (not bundled into the select above): sms_training_opt_out is a
+        // brand-new column, and a missing column fails the WHOLE combined select it's
+        // part of — bundling it in would risk breaking cats/banks/mindful loading for
+        // every user until the migration is applied. Isolated here so it fails alone.
+        supabase.from("user_prefs").select("sms_training_opt_out").eq("user_id", userId).maybeSingle(),
       ]);
       if (cancelled) return; // userId changed while fetching
+      // Only show the toggle once we've confirmed the column actually exists (query
+      // succeeded) — otherwise it renders as an interactive control that 400s on tap
+      // before the migration is applied. Appears automatically once migrated, no redeploy.
+      setSmsTrainingFeatureAvailable(!smsPrefsResult.error);
+      setSmsTrainingOptOut(!!smsPrefsResult.data?.sms_training_opt_out);
       const mappedExps = (expRows || []).map(dbToExp);
       const mappedTrips = (tripRows || []).map(dbToTrip);
       setExps(mappedExps);
@@ -2432,13 +2444,36 @@ ${breakdownHtml}
                 </div>
               </div>
               <div onClick={() => { hap(); saveMindfulPrefs({ autoMonthlyPopup: !mindfulPrefs.autoMonthlyPopup }); }}
-                style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", borderRadius: 10, background: G.bg2, cursor: "pointer", marginBottom: 12 }}>
+                style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", borderRadius: 10, background: G.bg2, cursor: "pointer", marginBottom: 8 }}>
                 <div style={{ width: 18, height: 18, borderRadius: 5, border: `2px solid ${mindfulPrefs.autoMonthlyPopup ? "#007AFF" : G.bdr}`, background: mindfulPrefs.autoMonthlyPopup ? "#007AFF" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#FFF", fontWeight: 700, flexShrink: 0, marginTop: 1 }}>{mindfulPrefs.autoMonthlyPopup ? "✓" : ""}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 600, color: G.t1 }}>Monthly Smart Spends popup</div>
                   <div style={{ fontSize: 11, color: G.tm, marginTop: 2, lineHeight: 1.4 }}>Automatically show last month's summary on your first app open of each new month.</div>
                 </div>
               </div>
+              {smsTrainingFeatureAvailable && (
+                <>
+                  <div onClick={async () => {
+                    hap();
+                    const next = !smsTrainingOptOut;
+                    setSmsTrainingOptOut(next);
+                    const patch = { user_id: userId, sms_training_opt_out: next };
+                    if (next) patch.sms_sample_state = null; // discard any in-progress candidate on opt-out
+                    const { error } = await supabase.from("user_prefs").upsert(patch);
+                    if (error) { setSmsTrainingOptOut(!next); sToast("Error saving", "err"); } else { sToast(next ? "Opted out" : "Opted in"); }
+                  }} style={{ display: "flex", alignItems: "flex-start", gap: 10, padding: "12px 14px", borderRadius: 10, background: G.bg2, cursor: "pointer", marginBottom: 4 }}>
+                    <div style={{ width: 18, height: 18, borderRadius: 5, border: `2px solid ${!smsTrainingOptOut ? "#007AFF" : G.bdr}`, background: !smsTrainingOptOut ? "#007AFF" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, color: "#FFF", fontWeight: 700, flexShrink: 0, marginTop: 1 }}>{!smsTrainingOptOut ? "✓" : ""}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600, color: G.t1 }}>Help improve SMS parsing</div>
+                      <div style={{ fontSize: 11, color: G.tm, marginTop: 2, lineHeight: 1.4 }}>Shares at most 1 redacted, anonymized SMS sample/week, never linked to your account. Turning this off won't remove a sample already shared.</div>
+                    </div>
+                  </div>
+                  {/* Link kept outside the toggle's click region — a mistap near it must not silently flip the consent preference */}
+                  <div style={{ fontSize: 11, color: G.t3, marginBottom: 12, paddingLeft: 42 }}>
+                    <a href="https://github.com/parthamarshah/expenses.tracker-app/blob/master/PRIVACY.md" target="_blank" rel="noopener noreferrer" style={{ color: "#007AFF" }}>Privacy Policy</a>
+                  </div>
+                </>
+              )}
               <button onClick={async () => {
                 const email = session?.user?.email;
                 if (!email) return;
@@ -2514,6 +2549,9 @@ ${breakdownHtml}
                 <div style={{ fontSize: 13, color: G.t2, lineHeight: 1.5, marginBottom: 12 }}>Get your API key from the key icon (top right), then download the shortcut and set up a message automation for your bank.</div>
                 <button onClick={() => { dismissOnboard(); setKeyMod(true); }} style={{ width: "100%", padding: "11px", borderRadius: 10, border: `2px solid ${G.bk}`, background: G.bk, color: G.wh, fontSize: 14, fontWeight: 700, cursor: "pointer" }}>Set Up Key & Shortcut</button>
               </div>
+              {smsTrainingFeatureAvailable && (
+                <div style={{ fontSize: 12, color: G.t3, lineHeight: 1.5, marginBottom: 4 }}>We sample a small number of anonymized SMS snippets to improve parsing accuracy — see Profile → Preferences to opt out.</div>
+              )}
             </>}
 
             {/* Navigation */}
