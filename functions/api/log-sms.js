@@ -1,8 +1,9 @@
 // Cloudflare Pages Function: /api/log-sms
 import { createClient } from "@supabase/supabase-js";
+import { redactSms } from "./_smsRedact.js";
 
 export async function onRequestPost(context) {
-  const { env, request } = context;
+  const { env, request, waitUntil } = context;
 
   const cors = {
     "Content-Type": "application/json",
@@ -51,6 +52,14 @@ export async function onRequestPost(context) {
   // Step 2: Check if this is a debit SMS
   if (!isDebitSms(sms)) {
     return new Response(JSON.stringify({ ok: false, error: "Not a debit SMS — skipped", skipped: true }), { status: 422, headers: cors });
+  }
+
+  // Step 2b: Weekly anonymized training sample (best-effort, never affects the
+  // response below). Gated on an env var that defaults OFF when absent — shipping
+  // this code is separate from turning collection on. See sms_training_migration.sql
+  // and functions/api/_smsRedact.js for the full design.
+  if (waitUntil) {
+    waitUntil(sampleForTraining(supabase, userId, sms, bank, env).catch(() => {}));
   }
 
   // Step 3: Auto-detect payment mode type (card/bank/cash)
@@ -599,4 +608,69 @@ function parseSmsNote(sms, bank) {
     }
   }
   return "SMS expense";
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Weekly anonymized training-sample collector. Reservoir-samples one redacted
+// SMS per user per ISO week into `sms_training_samples`, which has no user_id
+// column at all — this function is the only place that ever holds both a raw
+// SMS and a user_id together, and it never writes them anywhere jointly.
+//
+// State (`user_prefs.sms_sample_state`) holds only already-redacted text — the
+// redaction call happens the moment a message becomes the week's candidate,
+// not later at flush time, so raw SMS content never sits at rest.
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async function sampleForTraining(supabase, userId, sms, bank, env) {
+  if (env.SMS_TRAINING_SAMPLING_ENABLED !== "true") return;
+
+  const { data: prefsRow } = await supabase
+    .from("user_prefs")
+    .select("sms_training_opt_out, sms_sample_state")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (!prefsRow || prefsRow.sms_training_opt_out) return;
+
+  const { ok, redacted } = redactSms(sms);
+  if (!ok) return; // couldn't confidently redact this message — skip it, don't touch state
+
+  const currentWeek = isoWeekString(new Date());
+
+  let state = {};
+  if (prefsRow.sms_sample_state) {
+    try { state = JSON.parse(prefsRow.sms_sample_state); } catch { state = {}; }
+  }
+
+  if (!state.week) {
+    state = { week: currentWeek, count: 0, candidate: null };
+  } else if (state.week !== currentWeek) {
+    if (state.candidate) {
+      const { error: flushError } = await supabase.from("sms_training_samples").insert({
+        bank: state.candidate.bank || "unknown",
+        message: state.candidate.message,
+        week: state.week,
+      });
+      // Non-sensitive log only — never logs sms/redacted/candidate content, just that
+      // a write failed, per CLAUDE.md's rule against logging SMS-derived content.
+      if (flushError) console.error("sms_training: flush insert failed");
+    }
+    state = { week: currentWeek, count: 0, candidate: null };
+  }
+
+  state.count += 1;
+  if (Math.random() < 1 / state.count) {
+    state.candidate = { bank, message: redacted };
+  }
+
+  const { error: stateError } = await supabase.from("user_prefs").upsert({ user_id: userId, sms_sample_state: JSON.stringify(state) });
+  if (stateError) console.error("sms_training: state upsert failed");
+}
+
+function isoWeekString(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
 }
