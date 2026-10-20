@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { supabase, dbToExp, dbToTrip, expToDb, tripToDb } from "./supabase";
 import { useAuth } from "./AuthContext";
 import Auth, { PasswordReset } from "./Auth";
+import { groupUncategorized, prepareHistory, suggestCategory } from "./categorize";
 
 // Categories for users who signed up before the new defaults
 const OLD_DEFAULT_CATEGORIES = [
@@ -286,6 +287,11 @@ export default function ExpenseTracker() {
   const [sw,        setSw]        = useState({ id: null, dir: null });
   const [swipeConf, setSwipeConf] = useState(null); // expense id pending delete confirm via swipe
   const [detMod,    setDetMod]    = useState(null);
+  // Categorize sheet: bulk-file uncategorized expenses grouped by payee
+  const [catSheet,         setCatSheet]         = useState(false);
+  const [catSheetExpanded, setCatSheetExpanded] = useState(null);  // group id showing its payments
+  const [catSheetLimit,    setCatSheetLimit]    = useState(30);    // groups rendered before "Show more"
+  const [catUndo,          setCatUndo]          = useState(null);  // { ids, catId, label } of the last tap
   const [tripDet,   setTripDet]   = useState(null);
   const [confDel,   setConfDel]   = useState(null); // trip deletion confirm
   // Insights period: "month" | "week" | "year"
@@ -340,6 +346,8 @@ export default function ExpenseTracker() {
     setCats(OLD_DEFAULT_CATEGORIES); setUserKey(null); setEditId(null);
     setAmt(""); setNote(""); setCat("personal"); setPay("cash");
     setMindfulPopup(null); setMindfulOverrides({}); setInsCatExpanded(false);
+    setCatSheet(false); setCatSheetExpanded(null); setCatSheetLimit(30); setCatUndo(null);
+    catGroupOrder.current = null;
     setMindfulPrefs({ essentialSigs: [], avoidableSigs: [], reviewedScopes: [], autoMonthlyPopup: true, forceEnabled: false });
   }, [userId]);
 
@@ -462,7 +470,20 @@ export default function ExpenseTracker() {
           { event: "*", schema: "public", table: "expenses", filter: `user_id=eq.${userId}` },
           ({ eventType, new: n, old: o }) => {
             if (eventType === "INSERT") { const e = dbToExp(n); setExps(p => p.some(x => x.id === e.id) ? p : [...p, e].sort((a, b) => new Date(b.date) - new Date(a.date))); }
-            if (eventType === "UPDATE") setExps(p => p.map(x => x.id === n.id ? dbToExp(n) : x));
+            if (eventType === "UPDATE") {
+              const updated = dbToExp(n);
+              setExps(p => {
+                // Echo of our own optimistic write (e.g. a Categorize-sheet batch): keep the
+                // same array so the sheet doesn't recompute once per row.
+                const cur = p.find(x => x.id === updated.id);
+                const unchanged = cur &&
+                  cur.category === updated.category && cur.amount === updated.amount &&
+                  cur.note === updated.note && cur.payMode === updated.payMode &&
+                  (cur.tripId || null) === (updated.tripId || null) &&
+                  new Date(cur.date).getTime() === new Date(updated.date).getTime();
+                return unchanged ? p : p.map(x => x.id === updated.id ? updated : x);
+              });
+            }
             if (eventType === "DELETE") setExps(p => p.filter(x => x.id !== o.id));
           }).subscribe();
 
@@ -617,6 +638,28 @@ export default function ExpenseTracker() {
   // Visible categories only — used for Add form category grid
   const visCats = useMemo(() => allCats.filter(c => !c.hidden), [allCats]);
 
+  // ── Categorize sheet ──────────────────────────────────────────────────────
+  // Trip expenses are excluded everywhere here: they're filed by trip, not category.
+  const uncatCount = useMemo(() => exps.filter(e => e.category === "uncategorized" && !e.tripId).length, [exps]);
+  // Real categories only (no trips) — the sheet files into categories.
+  const sheetCats = useMemo(() => cats.filter(c => !c.hidden), [cats]);
+  // Only computed while the sheet is open; suggestions scan the whole history.
+  // Card order is frozen when the sheet opens (new groups go to the bottom) so a payment
+  // arriving via realtime can't reshuffle cards under the user's finger mid-tap.
+  const catGroupOrder = useRef(null);
+  const catGroups = useMemo(() => {
+    if (!catSheet) return [];
+    const history = prepareHistory(exps);
+    const groups = groupUncategorized(exps).map(g => ({ ...g, suggestion: suggestCategory(g, history, sheetCats) }));
+    if (!catGroupOrder.current) {
+      catGroupOrder.current = new Map(groups.map((g, i) => [g.id, i]));
+      return groups;
+    }
+    const order = catGroupOrder.current;
+    const rank = (g) => (order.has(g.id) ? order.get(g.id) : Number.MAX_SAFE_INTEGER);
+    return [...groups].sort((a, b) => rank(a) - rank(b)); // stable sort keeps new groups in their own order
+  }, [catSheet, exps, sheetCats]);
+
   // Dynamic history filter: only categories that have expenses in the selected period
   const activeFilterCats = useMemo(() => {
     const histAsPeriod = histPeriod === "year" ? { scope: "year", year: histYear } : histPeriod === "week" ? { scope: "week", weekStart: histWeek.weekStart } : { scope: "month", year: histMonth.year, month: histMonth.month };
@@ -734,6 +777,63 @@ export default function ExpenseTracker() {
     supabase.from("expenses").delete().eq("id", id)
       .then(({ error }) => { if (error) sToast("Sync error", "err"); });
   }, [sToast]);
+
+  // Files every expense in a Categorize-sheet group in one write. Only the category column
+  // changes and it has the same name in the DB and app shape, so this skips expToDb on
+  // purpose. RLS scopes the update to the signed-in user; the user_id filter is a second guard.
+  //
+  // Ids go into the URL as id=in.(...), and a group from one daily payee can hold
+  // hundreds of rows, so the write is split into batches of 100 to stay well under URL
+  // length limits. Returns a promise that resolves once every batch has finished.
+  const writeCategoryBatches = useCallback(async (ids, newCatId, onlyIfCatId) => {
+    const BATCH = 100;
+    let failed = false;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      let q = supabase.from("expenses").update({ category: newCatId }).in("id", ids.slice(i, i + BATCH)).eq("user_id", userId);
+      if (onlyIfCatId) q = q.eq("category", onlyIfCatId);
+      const { error } = await q;
+      if (error) failed = true;
+    }
+    return !failed;
+  }, [userId]);
+
+  const doCategorizeGroup = useCallback((ids, catId, label) => {
+    hap();
+    const idSet = new Set(ids);
+    setExps(p => p.map(e => idSet.has(e.id) ? { ...e, category: catId } : e));
+    setCatSheetExpanded(null);
+    const write = writeCategoryBatches(ids, catId, null);
+    // Undo waits on this write: if Undo were sent while the write was still in flight,
+    // its category=catId filter would match nothing and the write would land afterwards.
+    setCatUndo({ ids, catId, label, write });
+    // On failure put the rows back so the screen matches the DB and the group reappears
+    // for another try, instead of looking filed until the next refetch.
+    write.then(ok => {
+      if (ok) return;
+      setExps(p => p.map(e => idSet.has(e.id) && e.category === catId ? { ...e, category: "uncategorized" } : e));
+      setCatUndo(u => (u && u.write === write ? null : u));
+      sToast("Couldn't save \u2014 check connection and tap again", "err");
+    });
+  }, [writeCategoryBatches, sToast]);
+
+  // Reverts the last sheet tap. Only rows still in the category we set are reverted, so an
+  // edit made elsewhere in the meantime isn't clobbered.
+  const undoCategorize = useCallback(() => {
+    if (!catUndo) return;
+    hap();
+    const { ids, catId, write } = catUndo;
+    const idSet = new Set(ids);
+    setExps(p => p.map(e => idSet.has(e.id) && e.category === catId ? { ...e, category: "uncategorized" } : e));
+    setCatUndo(null);
+    write
+      .then(() => writeCategoryBatches(ids, "uncategorized", catId))
+      .then(ok => { if (!ok) sToast("Undo didn't save \u2014 check connection", "err"); });
+  }, [catUndo, writeCategoryBatches, sToast]);
+
+  const closeCatSheet = useCallback(() => {
+    setCatSheet(false); setCatSheetExpanded(null); setCatSheetLimit(30); setCatUndo(null);
+    catGroupOrder.current = null;
+  }, []);
 
   const doEdit = useCallback((exp) => {
     setAmt(exp.amount.toString()); setNote(exp.note || "");
@@ -1545,6 +1645,13 @@ ${breakdownHtml}
               </div>
             )}
 
+            {!selTrip && uncatCount > 0 && (
+              <button onClick={() => { hap(); setCatSheet(true); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "12px 14px", borderRadius: 12, border: "none", background: "#FFF4E5", color: "#8A4B00", fontSize: 15, fontWeight: 700, cursor: "pointer", marginBottom: 10, textAlign: "left" }}>
+                <span>{uncatCount} {uncatCount === 1 ? "expense needs" : "expenses need"} a category</span>
+                <span style={{ flexShrink: 0 }}>Sort now {"\u203A"}</span>
+              </button>
+            )}
+
             <div style={{ display: "flex", alignItems: "center", background: G.bg2, borderRadius: 12, padding: "0 14px", marginBottom: 10 }}>
               <span style={{ fontSize: 15, marginRight: 8, color: G.t3 }}>{"\u2315"}</span>
               <input type="text" placeholder="Search amount, note, category, mode..." value={sq} onChange={e => setSq(e.target.value)} style={{ flex: 1, padding: "13px 0", border: "none", outline: "none", fontSize: 16, background: "transparent", color: G.t1 }} />
@@ -2213,6 +2320,101 @@ ${breakdownHtml}
             <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
               <button onClick={() => doEdit(detMod)} style={{ flex: 1, padding: "14px", borderRadius: 12, border: `2px solid ${G.bdr}`, background: G.bg, color: G.t1, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>Edit</button>
               <button onClick={() => doDel(detMod.id)} style={{ flex: 1, padding: "14px", borderRadius: 12, border: "none", background: G.dk, color: G.wh, fontSize: 16, fontWeight: 700, cursor: "pointer" }}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══════ CATEGORIZE SHEET ══════ */}
+      {catSheet && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.5)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 999 }}>
+          {/* No tap-outside-to-close: it would silently discard the Undo for a whole group. */}
+          <div style={{ width: "100%", maxWidth: 390, maxHeight: "88vh", display: "flex", flexDirection: "column", background: G.bg, borderRadius: "20px 20px 0 0", padding: "20px 16px calc(env(safe-area-inset-bottom, 0px) + 20px)", boxSizing: "border-box" }} onClick={e => e.stopPropagation()}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: G.lt, margin: "0 auto 14px", flexShrink: 0 }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10, flexShrink: 0 }}>
+              <div>
+                <div style={{ fontSize: 20, fontWeight: 800 }}>Categorize</div>
+                <div style={{ fontSize: 13, color: G.t2, marginTop: 2 }}>{uncatCount === 0 ? "Nothing left" : `${uncatCount} left · one tap files every payment in a group`}</div>
+              </div>
+              <button onClick={closeCatSheet} aria-label="Close" style={{ background: G.bg2, border: "none", borderRadius: 100, width: 36, height: 36, fontSize: 16, color: G.t2, cursor: "pointer", flexShrink: 0 }}>{"\u2715"}</button>
+            </div>
+
+            {catUndo && (() => {
+              const c = sheetCats.find(x => x.id === catUndo.catId);
+              const n = catUndo.ids.length;
+              return (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 12, background: G.dk, color: G.wh, fontSize: 14, fontWeight: 600, marginBottom: 10, flexShrink: 0 }}>
+                  <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{"\u2713"} {c ? `${c.icon} ${c.label}` : "Filed"} {"\u00B7"} {n} {n === 1 ? "payment" : "payments"} {"\u00B7"} {catUndo.label}</span>
+                  <button onClick={undoCategorize} style={{ background: "none", border: "none", color: "#FFCC00", fontSize: 15, fontWeight: 800, cursor: "pointer", padding: "12px 14px", margin: "-10px -12px -10px 0", flexShrink: 0 }}>Undo</button>
+                </div>
+              );
+            })()}
+
+            <div style={{ overflowY: "auto", WebkitOverflowScrolling: "touch", flex: 1, minHeight: 0 }}>
+              {catGroups.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "36px 0 20px" }}>
+                  <div style={{ fontSize: 34, marginBottom: 8 }}>{"\u2705"}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>All caught up</div>
+                  <button onClick={closeCatSheet} style={{ padding: "12px 28px", borderRadius: 12, border: "none", background: G.bk, color: G.wh, fontSize: 15, fontWeight: 700, cursor: "pointer" }}>Done</button>
+                </div>
+              ) : (<>
+                {catGroups.slice(0, catSheetLimit).map(g => {
+                  const sug = g.suggestion;
+                  const sugCat = sug ? sheetCats.find(c => c.id === sug.catId) : null;
+                  // Suggested category first so it's reachable without scrolling the chip row.
+                  const chipCats = sugCat ? [sugCat, ...sheetCats.filter(c => c.id !== sugCat.id)] : sheetCats;
+                  const expanded = catSheetExpanded === g.id;
+                  const n = g.items.length;
+                  const latest = g.items[0];
+                  const subtitle = n === 1
+                    ? `${dayLbl(latest.date)} · ${tts(latest.date)} · ${getPayLabel(latest.payMode)}`
+                    : `${n} payments · last ${dayLbl(latest.date)}`;
+                  return (
+                    <div key={g.id} style={{ background: G.bg2, borderRadius: 14, padding: "12px 12px 10px", marginBottom: 10 }}>
+                      <div onClick={() => n > 1 && setCatSheetExpanded(expanded ? null : g.id)} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, cursor: n > 1 ? "pointer" : "default" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 15, fontWeight: 700, color: g.payee ? G.t1 : G.t3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", ...gujStyle(g.label, 15) }}>{g.label}</div>
+                          <div style={{ fontSize: 14, color: G.t2, marginTop: 2 }}>{subtitle}{n > 1 && (expanded ? " \u25B4" : " \u25BE")}</div>
+                        </div>
+                        <div style={{ fontSize: 16, fontWeight: 800, color: G.t1, flexShrink: 0 }}>{formatINR(g.total)}</div>
+                      </div>
+
+                      {expanded && (
+                        <div style={{ marginTop: 8, borderTop: `1px solid ${G.lt}`, paddingTop: 6 }}>
+                          {g.items.map(e => (
+                            <div key={e.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: G.t2, padding: "4px 0" }}>
+                              <span>{dayLbl(e.date)} · {tts(e.date)} · {getPayLabel(e.payMode)}</span>
+                              <span style={{ fontWeight: 600 }}>{formatINR(e.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {sugCat && (
+                        <div style={{ fontSize: 13, color: G.t2, marginTop: 8 }}>
+                          Suggested: <span style={{ fontWeight: 700, color: G.t1, ...gujStyle(sugCat.label, 13) }}>{sugCat.icon} {sugCat.label}</span> <span style={{ color: G.t3 }}>· {sug.reason}</span>
+                        </div>
+                      )}
+
+                      <div style={{ display: "flex", gap: 6, overflowX: "auto", WebkitOverflowScrolling: "touch", marginTop: 8, paddingBottom: 2 }}>
+                        {chipCats.map(c => {
+                          const isSug = sugCat && c.id === sugCat.id;
+                          return (
+                            <button key={c.id} onClick={() => doCategorizeGroup(g.items.map(e => e.id), c.id, g.label)} style={{ flexShrink: 0, minHeight: 44, padding: "8px 14px", borderRadius: 100, border: isSug ? `2px solid ${G.bk}` : `1.5px solid ${G.bdr}`, background: isSug ? "#FFF4E5" : G.bg, color: G.t1, fontSize: 14, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", ...gujStyle(c.label, 14) }}>
+                              {isSug && "\u2713 "}{c.icon} {c.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                {catGroups.length > catSheetLimit && (
+                  <button onClick={() => setCatSheetLimit(l => l + 30)} style={{ width: "100%", padding: 12, borderRadius: 12, border: `1.5px solid ${G.bdr}`, background: G.bg, color: G.t2, fontSize: 14, fontWeight: 700, cursor: "pointer", marginBottom: 6 }}>
+                    Show {Math.min(30, catGroups.length - catSheetLimit)} more
+                  </button>
+                )}
+              </>)}
             </div>
           </div>
         </div>
