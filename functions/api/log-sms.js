@@ -207,20 +207,31 @@ export async function onRequestPost(context) {
     // returns that exact literal for every standing instruction regardless of
     // payee, so it would otherwise conflate unrelated SIPs/insurance/bills.
     const GENERIC_NOTES = new Set(["SMS expense", "Auto-debit"]);
-    const keyword = (note || "").trim().split(/\s+/)[0] || "";
+    const firstToken = (note || "").trim().split(/\s+/)[0] || "";
+    // HDFC masked payees ("*zxgs@pty") carry only a short suffix of the real VPA. Drop the
+    // "*" so the suffix still matches both earlier masked notes and older full-VPA notes
+    // ("paytm.s2uzxgs@pty"), but demand >=4 chars before "@" so a 1–3 char suffix
+    // doesn't collide with unrelated payees on the same UPI handle.
+    const isMasked = firstToken.startsWith("*");
+    const keyword = firstToken.replace(/^\*+/, "");
     const alnumLen = keyword.replace(/[^a-zA-Z0-9]/g, "").length;
+    const maskedLocalLen = keyword.split("@")[0].replace(/[^a-zA-Z0-9]/g, "").length;
     if (
       keyword &&
       alnumLen >= 3 &&
+      (!isMasked || maskedLocalLen >= 4) &&
       !/[%_*\\]/.test(keyword) &&
       !/^\d+$/.test(keyword) &&
       !GENERIC_NOTES.has(note)
     ) {
+      // Masked suffixes are anchored to the end of the note: "%zxgs@pty%" would also hit
+      // an unrelated "...zxgs@ptybl" payee on a different UPI handle.
+      const notePattern = isMasked ? `%${keyword}` : `%${keyword}%`;
       const { data: prev } = await supabase
         .from("expenses")
         .select("category")
         .eq("user_id", userId)
-        .ilike("note", `%${keyword}%`)
+        .ilike("note", notePattern)
         .neq("category", "trip")
         .neq("category", "uncategorized")
         .order("date", { ascending: false })
@@ -538,7 +549,9 @@ function parseSmsNote(sms, bank) {
   // Card-linked UPI txn: "At <payee-token> ... by UPI <ref>" (e.g. newer HDFC RuPay-card-via-UPI SMS).
   // The token is usually an opaque VPA/merchant id (e.g. "paytm-76881028@ptybl") with no separable
   // human-readable name, so capture it verbatim rather than falling through to a truncated guess.
-  const upiViaCard = sms.match(/\bAt\s+([A-Za-z0-9][A-Za-z0-9@._-]*)\s+by\s+UPI\b/i);
+  // Since ~2026-10-14 HDFC masks the payee to its last few chars with a leading "*"
+  // (e.g. "At *zxgs@pty by UPI ..." for "paytm.s2uzxgs@pty"), so allow an optional "*" prefix.
+  const upiViaCard = sms.match(/\bAt\s+(\*?[A-Za-z0-9][A-Za-z0-9@._-]*)\s+by\s+UPI\b/i);
   if (upiViaCard) {
     const token = upiViaCard[1].trim().slice(0, 50);
     if (token.length >= 2 && !/^\d+$/.test(token)) return token;

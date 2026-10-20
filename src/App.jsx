@@ -254,6 +254,10 @@ const buildMindfulReport = (exps, period, trips, prefs, history) => {
   };
 };
 
+// Module-scope so channel topics stay unique across effect re-runs (e.g. sign out and back
+// in as the same user while the previous channel is still leaving). See subscribeRealtime.
+let realtimeChannelGen = 0;
+
 export default function ExpenseTracker() {
   // ── Auth ──────────────────────────────────────────────────────────────────
   const { session, loading: authLoading, signOut, userId, needsPasswordReset } = useAuth();
@@ -440,7 +444,20 @@ export default function ExpenseTracker() {
       }
 
       if (cancelled) return;
-      expsChannel = supabase.channel(`exp:${userId}`)
+      subscribeRealtime();
+      document.addEventListener("visibilitychange", onResume);
+      window.addEventListener("pageshow", onResume);
+      window.addEventListener("online", onResume);
+    };
+
+    // Each (re)subscribe gets a fresh topic name: supabase.channel() hands back any
+    // existing channel with the same topic, and a removed channel only drops out of the
+    // client after its async leave completes — reusing the name could re-subscribe a
+    // half-closed channel. The topic is just a label; the user_id filter does the scoping.
+    const subscribeRealtime = () => {
+      realtimeChannelGen += 1;
+      const channelGen = realtimeChannelGen;
+      expsChannel = supabase.channel(`exp:${userId}:${channelGen}`)
         .on("postgres_changes",
           { event: "*", schema: "public", table: "expenses", filter: `user_id=eq.${userId}` },
           ({ eventType, new: n, old: o }) => {
@@ -449,7 +466,7 @@ export default function ExpenseTracker() {
             if (eventType === "DELETE") setExps(p => p.filter(x => x.id !== o.id));
           }).subscribe();
 
-      tripsChannel = supabase.channel(`trp:${userId}`)
+      tripsChannel = supabase.channel(`trp:${userId}:${channelGen}`)
         .on("postgres_changes",
           { event: "*", schema: "public", table: "trips", filter: `user_id=eq.${userId}` },
           ({ eventType, new: n, old: o }) => {
@@ -459,12 +476,61 @@ export default function ExpenseTracker() {
           }).subscribe();
     };
 
+    // iOS suspends a home-screen PWA in the background and silently drops the realtime
+    // websocket, and standalone mode has no reload gesture — so expenses logged via the
+    // Shortcut while backgrounded never appeared until the app was force-quit. On return
+    // to the foreground (or network coming back), rebuild the channels and refetch.
+    // Separate from AuthContext's visibilitychange listener, which handles the session only.
+    // Only resync after the app was actually backgrounded for a while — quick app switches
+    // keep their socket and would otherwise cost two full refetches each. "online" skips
+    // the check since a network drop kills the socket regardless of time hidden.
+    const MIN_HIDDEN_MS = 30000;
+    let hiddenAt = null;
+    let lastResync = Date.now();
+    let resyncSeq = 0;
+    const onResume = async (event) => {
+      if (cancelled) return;
+      if (document.visibilityState !== "visible") {
+        // Only the real hide counts, and the earliest one wins: iOS can deliver a queued
+        // "online"/"pageshow" on wake while still hidden, which must not restart the timer.
+        if (event?.type === "visibilitychange" && hiddenAt === null) hiddenAt = Date.now();
+        return;
+      }
+      const isOnline = event?.type === "online";
+      // A back-forward-cache restore may not have fired a "hidden" visibilitychange first.
+      const isBfcacheRestore = event?.type === "pageshow" && event.persisted === true;
+      const hiddenLongEnough = hiddenAt !== null && Date.now() - hiddenAt >= MIN_HIDDEN_MS;
+      if (!isOnline && !isBfcacheRestore && !hiddenLongEnough) return;
+      if (Date.now() - lastResync < 3000) return; // visibilitychange + pageshow often fire together
+      lastResync = Date.now();
+      hiddenAt = null;
+      const mySeq = ++resyncSeq;
+      // Resubscribe BEFORE refetching so an insert landing in between is still delivered
+      // (the INSERT handler dedupes by id). Old channels are removed after the new ones
+      // exist, so the socket never drops to zero channels and disconnects in between.
+      const staleChannels = [expsChannel, tripsChannel];
+      subscribeRealtime();
+      staleChannels.forEach(ch => { if (ch) supabase.removeChannel(ch); });
+      const [expRes, tripRes] = await Promise.all([
+        supabase.from("expenses").select("*").eq("user_id", userId).order("date", { ascending: false }),
+        supabase.from("trips").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+      ]);
+      // Drop out-of-order results: a slower earlier refetch must not overwrite a newer one.
+      if (cancelled || mySeq !== resyncSeq) return;
+      // On a failed refetch keep what's on screen rather than blanking the list.
+      if (!expRes.error && expRes.data) setExps(expRes.data.map(dbToExp));
+      if (!tripRes.error && tripRes.data) setTrips(tripRes.data.map(dbToTrip));
+    };
+
     init();
     return () => {
       cancelled = true;
       if (mindfulPopupTimer) clearTimeout(mindfulPopupTimer);
-      expsChannel?.unsubscribe();
-      tripsChannel?.unsubscribe();
+      document.removeEventListener("visibilitychange", onResume);
+      window.removeEventListener("pageshow", onResume);
+      window.removeEventListener("online", onResume);
+      if (expsChannel) supabase.removeChannel(expsChannel);
+      if (tripsChannel) supabase.removeChannel(tripsChannel);
     };
   }, [userId]);
 
